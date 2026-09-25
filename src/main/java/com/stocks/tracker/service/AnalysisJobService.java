@@ -1,8 +1,13 @@
 package com.stocks.tracker.service;
 
+import com.stocks.tracker.model.SavedAnalysis;
+import com.stocks.tracker.repository.SavedAnalysisRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -19,7 +24,10 @@ import java.util.concurrent.Future;
 @Service
 public class AnalysisJobService {
 
+    private static final Logger log = LoggerFactory.getLogger(AnalysisJobService.class);
     private static final int MAX_JOBS_KEPT = 20;
+    /** Kind of job whose results are saved for later reference. */
+    public static final String KIND_ANALYSIS = "analysis";
 
     public enum State { RUNNING, DONE, FAILED, CANCELLED }
 
@@ -66,8 +74,11 @@ public class AnalysisJobService {
     });
     private final Map<String, Job> jobs = new LinkedHashMap<>();
 
-    public AnalysisJobService(LlmService llmService) {
+    private final SavedAnalysisRepository savedAnalyses;
+
+    public AnalysisJobService(LlmService llmService, SavedAnalysisRepository savedAnalyses) {
         this.llmService = llmService;
+        this.savedAnalyses = savedAnalyses;
     }
 
     /** Starts an analysis, or returns the one of the same kind already running. */
@@ -85,7 +96,9 @@ public class AnalysisJobService {
         job.future = executor.submit(() -> {
             try {
                 LlmService.ChatResult result = llmService.chat(prompt, null);
-                finish(job, State.DONE, result, null);
+                if (finish(job, State.DONE, result, null) && KIND_ANALYSIS.equals(job.kind)) {
+                    save(prompt, result);
+                }
             } catch (Exception e) {
                 finish(job, State.FAILED, null, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             }
@@ -94,15 +107,25 @@ public class AnalysisJobService {
     }
 
     /** Only the first terminal state sticks, so a cancelled job is never overwritten by its dying thread. */
-    private static void finish(Job job, State state, LlmService.ChatResult result, String error) {
+    private static boolean finish(Job job, State state, LlmService.ChatResult result, String error) {
         synchronized (job) {
             if (job.state != State.RUNNING) {
-                return;
+                return false;
             }
             job.result = result;
             job.error = error;
             job.finishedAt = System.currentTimeMillis();
             job.state = state;
+            return true;
+        }
+    }
+
+    /** A failure to save must not turn a finished analysis into a failed one. */
+    private void save(String prompt, LlmService.ChatResult result) {
+        try {
+            savedAnalyses.save(new SavedAnalysis(LocalDateTime.now(), result.model(), result.durationMs(), prompt, result.response()));
+        } catch (Exception e) {
+            log.warn("Could not save analysis: {}", e.getMessage());
         }
     }
 

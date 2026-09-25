@@ -583,3 +583,93 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 });
+
+// Saved portfolio analyses: every completed analysis is stored server-side for later reference.
+document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("history-btn");
+    const dialog = document.getElementById("history-dialog");
+    if (!btn || !dialog) {
+        return;
+    }
+    const list = document.getElementById("history-list");
+    const out = document.getElementById("history-output");
+    const emptyEl = document.getElementById("history-empty");
+    const promptWrap = document.getElementById("history-prompt-wrap");
+    const promptEl = document.getElementById("history-prompt");
+    const delBtn = document.getElementById("history-delete");
+    let selectedId = null;
+
+    document.getElementById("history-close").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", e => {
+        if (e.target === dialog) {
+            dialog.close();
+        }
+    });
+
+    function clearDetail() {
+        selectedId = null;
+        out.hidden = true;
+        promptWrap.hidden = true;
+        delBtn.hidden = true;
+    }
+
+    async function show(id) {
+        const r = await fetch("/api/ai/analyses/" + id);
+        if (!r.ok) {
+            out.hidden = false;
+            out.classList.add("bad");
+            out.textContent = await r.text();
+            return;
+        }
+        const a = await r.json();
+        selectedId = a.id;
+        out.classList.remove("bad");
+        out.hidden = false;
+        showMarkdown(out, a.response, `${a.model}, ${(a.durationMs / 1000).toFixed(1)}s`);
+        promptEl.textContent = a.prompt;
+        promptWrap.hidden = false;
+        delBtn.hidden = false;
+        list.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.id === String(a.id)));
+    }
+
+    async function load(selectFirst) {
+        const items = await (await fetch("/api/ai/analyses")).json();
+        list.innerHTML = "";
+        emptyEl.hidden = items.length > 0;
+        items.forEach(a => {
+            const li = document.createElement("li");
+            const b = document.createElement("button");
+            b.type = "button";
+            b.dataset.id = a.id;
+            b.textContent = new Date(a.createdAt).toLocaleString() + (a.model ? " - " + a.model : "");
+            b.addEventListener("click", () => show(a.id));
+            li.appendChild(b);
+            list.appendChild(li);
+        });
+        if (!items.length) {
+            clearDetail();
+        } else if (selectFirst) {
+            show(items[0].id);
+        }
+    }
+
+    delBtn.addEventListener("click", async () => {
+        if (selectedId === null || !confirm("Delete this saved analysis? This cannot be undone.")) {
+            return;
+        }
+        const r = await fetch(`/api/ai/analyses/${selectedId}/delete`, {method: "POST"});
+        if (r.ok || r.status === 404) {
+            clearDetail();
+            load(true);
+        }
+    });
+
+    btn.addEventListener("click", () => {
+        clearDetail();
+        dialog.showModal();
+        load(true).catch(err => {
+            emptyEl.hidden = false;
+            emptyEl.textContent = "Could not load saved analyses: " + err.message;
+        });
+    });
+});

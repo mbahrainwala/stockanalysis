@@ -29,6 +29,8 @@
             <div class="title-actions">
             <button type="button" id="analyze-btn" class="btn btn-secondary" th:disabled="${portfolio.rows().isEmpty()}"
                     title="Analyze this portfolio with your configured AI model">Analyze</button>
+            <button type="button" id="history-btn" class="btn btn-secondary"
+                    title="Browse previously saved analyses">History</button>
             <button type="button" id="add-shares-open" class="btn btn-secondary" th:disabled="${accounts.isEmpty()}"
                     title="Add shares with lookup and company-name search">Add Shares&hellip;</button>
             <button type="button" id="quick-add-toggle" class="btn btn-primary btn-plus" title="Quick add a stock" aria-expanded="false"
@@ -258,6 +260,27 @@
         <button type="button" id="analysis-cancel" class="btn btn-danger" hidden>Cancel Analysis</button>
     </div>
     <p class="muted small-note">AI-generated and may be inaccurate. This is not financial advice. Uses the last refreshed prices.</p>
+</dialog>
+
+<dialog id="history-dialog" class="modal modal-wide">
+    <div class="modal-head">
+        <h2>Saved Analyses</h2>
+        <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
+    </div>
+    <p id="history-empty" class="muted" hidden>No saved analyses yet. Each completed portfolio analysis is saved here automatically.</p>
+    <div class="history-layout">
+        <ul id="history-list" class="history-list"></ul>
+        <div class="history-detail">
+            <div id="history-output" class="ai-response" hidden></div>
+            <details id="history-prompt-wrap" hidden>
+                <summary>Portfolio data sent to the model</summary>
+                <pre id="history-prompt" class="history-prompt"></pre>
+            </details>
+            <div class="ai-actions">
+                <button type="button" id="history-delete" class="btn btn-danger" hidden>Delete</button>
+            </div>
+        </div>
+    </div>
 </dialog>
 
 <dialog id="add-shares-dialog" class="modal">

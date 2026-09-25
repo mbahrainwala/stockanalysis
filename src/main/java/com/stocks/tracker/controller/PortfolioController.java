@@ -21,9 +21,12 @@ public class PortfolioController {
     private final TradingAccountRepository accountRepository;
     private final LlmService llmService;
     private final AnalysisJobService analysisJobService;
+    private final com.stocks.tracker.repository.SavedAnalysisRepository savedAnalysisRepository;
 
     public PortfolioController(PortfolioService portfolioService, TradingAccountRepository accountRepository,
-                               LlmService llmService, AnalysisJobService analysisJobService) {
+                               LlmService llmService, AnalysisJobService analysisJobService,
+                               com.stocks.tracker.repository.SavedAnalysisRepository savedAnalysisRepository) {
+        this.savedAnalysisRepository = savedAnalysisRepository;
         this.analysisJobService = analysisJobService;
         this.portfolioService = portfolioService;
         this.llmService = llmService;
@@ -199,8 +202,46 @@ public class PortfolioController {
                 + "exposure by market and currency, notable gains and losses versus cost, and any suggestions worth "
                 + "considering. Be specific and refer to holdings by symbol. Prices are the last refreshed prices.\n\n"
                 + summary;
-        var job = analysisJobService.start("analysis", request);
+        var job = analysisJobService.start(AnalysisJobService.KIND_ANALYSIS, request);
         return org.springframework.http.ResponseEntity.accepted().body(java.util.Map.of("id", job.getId()));
+    }
+
+    // ---- Saved analyses ----
+
+    @GetMapping("/api/ai/analyses")
+    @ResponseBody
+    public java.util.List<java.util.Map<String, Object>> savedAnalyses() {
+        return savedAnalysisRepository.findAllByOrderByCreatedAtDesc().stream()
+                .map(a -> java.util.Map.<String, Object>of(
+                        "id", a.getId(),
+                        "createdAt", a.getCreatedAt().toString(),
+                        "model", a.getModel() == null ? "" : a.getModel(),
+                        "durationMs", a.getDurationMs()))
+                .toList();
+    }
+
+    @GetMapping("/api/ai/analyses/{id}")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<?> savedAnalysis(@PathVariable Long id) {
+        return savedAnalysisRepository.findById(id)
+                .<org.springframework.http.ResponseEntity<?>>map(a -> org.springframework.http.ResponseEntity.ok(java.util.Map.of(
+                        "id", a.getId(),
+                        "createdAt", a.getCreatedAt().toString(),
+                        "model", a.getModel() == null ? "" : a.getModel(),
+                        "durationMs", a.getDurationMs(),
+                        "prompt", a.getPrompt(),
+                        "response", a.getResponse())))
+                .orElseGet(() -> org.springframework.http.ResponseEntity.status(404).body("Analysis not found."));
+    }
+
+    @PostMapping("/api/ai/analyses/{id}/delete")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<?> deleteSavedAnalysis(@PathVariable Long id) {
+        if (!savedAnalysisRepository.existsById(id)) {
+            return org.springframework.http.ResponseEntity.status(404).body("Analysis not found.");
+        }
+        savedAnalysisRepository.deleteById(id);
+        return org.springframework.http.ResponseEntity.noContent().build();
     }
 
     @PostMapping("/api/ai/analyze/{id}/cancel")
