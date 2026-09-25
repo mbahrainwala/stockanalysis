@@ -68,9 +68,26 @@ document.addEventListener("DOMContentLoaded", () => {
         current.forEach((el, i) => {
             el.innerHTML = fresh[i].innerHTML;
         });
+        // Cost boxes are inputs, so sync them separately and never clobber one being edited.
+        doc.querySelectorAll(".portfolio-table .cost-cell").forEach(f => {
+            const cur = table.querySelector(`.cost-cell[data-account-id="${f.dataset.accountId}"][data-stock-id="${f.dataset.stockId}"]`);
+            if (cur && cur !== document.activeElement) {
+                cur.value = f.value;
+                cur.dataset.original = f.dataset.original;
+            }
+        });
     }
 
+    // Both editable cell types post to their own endpoint; empty means "none" for either.
+    const CELLS = {
+        "share-cell": {url: "/holdings/set", field: "shares"},
+        "cost-cell": {url: "/holdings/cost", field: "cost"}
+    };
+    const cellType = el => Object.keys(CELLS).find(c => el.classList.contains(c));
+    const COST_TITLE = "Average purchase price per share in this account";
+
     async function save(input) {
+        const type = cellType(input);
         const value = input.value.trim().replace(/,/g, "");
         if (value === input.dataset.original) {
             return;
@@ -81,9 +98,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const body = new URLSearchParams({
                 accountId: input.dataset.accountId,
                 stockId: input.dataset.stockId,
-                shares: value
+                [CELLS[type].field]: value
             });
-            const response = await fetch("/holdings/set", {method: "POST", body});
+            const response = await fetch(CELLS[type].url, {method: "POST", body});
             if (!response.ok) {
                 input.classList.add("cell-error");
                 input.title = await response.text();
@@ -92,7 +109,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const n = value === "" || value === "-" ? 0 : Number(value);
             input.dataset.original = n === 0 ? "" : String(n);
             input.value = input.dataset.original;
-            input.title = "";
+            input.title = input.dataset.defaultTitle;
             await refreshTotals();
         } catch (e) {
             input.classList.add("cell-error");
@@ -103,18 +120,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     table.addEventListener("change", e => {
-        if (e.target.classList.contains("share-cell")) {
+        if (cellType(e.target)) {
             save(e.target);
         }
     });
 
     // Enter moves down the column like a spreadsheet.
     table.addEventListener("keydown", e => {
-        if (e.key !== "Enter" || !e.target.classList.contains("share-cell")) {
+        if (e.key !== "Enter" || !cellType(e.target)) {
             return;
         }
         e.preventDefault();
-        const cells = Array.from(table.querySelectorAll(`.share-cell[data-account-id="${e.target.dataset.accountId}"]`));
+        const cells = Array.from(table.querySelectorAll(`.${cellType(e.target)}[data-account-id="${e.target.dataset.accountId}"]`));
         const next = cells[cells.indexOf(e.target) + (e.shiftKey ? -1 : 1)];
         e.target.dispatchEvent(new Event("change", {bubbles: true}));
         (next || e.target).focus();
@@ -124,7 +141,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     table.addEventListener("focusin", e => {
-        if (e.target.classList.contains("share-cell")) {
+        if (cellType(e.target)) {
             e.target.select();
         }
     });
@@ -278,6 +295,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 });
 
+// Renders a model response as Markdown (escaped, so safe) with a small footer line.
+function showMarkdown(el, markdown, footer) {
+    el.classList.add("md");
+    el.innerHTML = window.renderMarkdown(markdown) + `<p class="ai-meta"></p>`;
+    el.querySelector(".ai-meta").textContent = footer;
+}
+
 // AI setup tab: Ollama endpoint, model selection and a test prompt.
 document.addEventListener("DOMContentLoaded", () => {
     const form = document.getElementById("ai-config-form");
@@ -367,29 +391,72 @@ document.addEventListener("DOMContentLoaded", () => {
         setStatus("Saved.", "ok");
     });
 
+    // The test prompt runs as a server-side job (like portfolio analysis) so a long prompt
+    // on a slow local model can't hit an HTTP timeout; we poll for the result.
+    const cancelChatBtn = document.getElementById("ai-cancel-btn");
+    let chatJobId = null;
+    cancelChatBtn.addEventListener("click", async () => {
+        if (!chatJobId) {
+            return;
+        }
+        cancelChatBtn.disabled = true;
+        const r = await fetch(`/api/ai/analyze/${chatJobId}/cancel`, {method: "POST"});
+        if (!r.ok && r.status !== 409) {
+            cancelChatBtn.disabled = false;
+        }
+    });
+
+    function chatFail(message) {
+        responseEl.classList.add("bad");
+        responseEl.textContent = message;
+    }
+
     chatForm.addEventListener("submit", async e => {
         e.preventDefault();
         responseEl.hidden = false;
-        responseEl.classList.remove("bad");
-        responseEl.textContent = "Thinking...";
+        responseEl.classList.remove("bad", "md");
+        responseEl.textContent = "Starting...";
         sendBtn.disabled = true;
         try {
-            const r = await fetch("/api/ai/chat", {
+            const start = await fetch("/api/ai/chat", {
                 method: "POST",
                 body: new URLSearchParams({prompt: document.getElementById("ai-prompt").value})
             });
-            if (!r.ok) {
-                responseEl.classList.add("bad");
-                responseEl.textContent = await r.text();
+            if (!start.ok) {
+                chatFail(await start.text());
                 return;
             }
-            const result = await r.json();
-            responseEl.textContent = result.response + `\n\n- ${result.model}, ${(result.durationMs / 1000).toFixed(1)}s`;
+            const {id} = await start.json();
+            chatJobId = id;
+            cancelChatBtn.hidden = false;
+            cancelChatBtn.disabled = false;
+            while (true) {
+                const r = await fetch("/api/ai/analyze/" + id);
+                if (!r.ok) {
+                    chatFail(await r.text());
+                    return;
+                }
+                const job = await r.json();
+                if (job.state === "DONE") {
+                    showMarkdown(responseEl, job.response, `${job.model}, ${(job.elapsedMs / 1000).toFixed(1)}s`);
+                    return;
+                }
+                if (job.state === "CANCELLED") {
+                    responseEl.textContent = "Cancelled.";
+                    return;
+                }
+                if (job.state === "FAILED") {
+                    chatFail(job.error || "Request failed.");
+                    return;
+                }
+                responseEl.textContent = `Thinking... ${Math.round(job.elapsedMs / 1000)}s elapsed. Local models can take several minutes.`;
+                await new Promise(res => setTimeout(res, 2000));
+            }
         } catch (err) {
-            responseEl.classList.add("bad");
-            responseEl.textContent = "Request failed: " + err.message;
+            chatFail("Request failed: " + err.message);
         } finally {
             sendBtn.disabled = false;
+            cancelChatBtn.hidden = true;
         }
     });
 
@@ -464,7 +531,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     btn.addEventListener("click", async () => {
         const token = ++pollToken;
-        out.classList.remove("bad");
+        out.classList.remove("bad", "md");
         out.textContent = "Starting analysis...";
         dialog.showModal();
         btn.disabled = true;
@@ -489,9 +556,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
                 const job = await r.json();
                 if (job.state === "DONE") {
-                    out.textContent = job.response + `
-
-- ${job.model}, ${(job.elapsedMs / 1000).toFixed(1)}s`;
+                    showMarkdown(out, job.response, `${job.model}, ${(job.elapsedMs / 1000).toFixed(1)}s`);
                     return;
                 }
                 if (job.state === "CANCELLED") {

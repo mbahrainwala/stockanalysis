@@ -5,6 +5,14 @@ spring:
     active: h2
   thymeleaf:
     cache: false
+  web:
+    resources:
+      chain:
+        # Fingerprint static asset URLs so a changed app.js is never served from browser cache.
+        strategy:
+          content:
+            enabled: true
+            paths: /**
   jpa:
     open-in-view: false
     properties:

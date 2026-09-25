@@ -54,8 +54,10 @@
                     <th>Market</th>
                     <th>Company</th>
                     <th class="num">Price</th>
-                    <th class="num" th:each="account : ${portfolio.accounts()}" th:text="${account.name}"></th>
+                    <th class="num" th:each="account : ${portfolio.accounts()}"
+                        th:text="${account.name + (account.currency != null ? ' (' + account.currency + ')' : '')}"></th>
                     <th class="num total-col">Total</th>
+                    <th class="num" title="Converted to USD at the current exchange rate">Gain / Loss (USD)</th>
                 </tr>
                 </thead>
                 <tbody>
@@ -69,13 +71,28 @@
                                th:data-account-id="${account.id}" th:data-stock-id="${row.stockId}"
                                th:value="${row.sharesByAccountId.get(account.id) != null ? row.sharesByAccountId.get(account.id).stripTrailingZeros().toPlainString() : ''}"
                                th:data-original="${row.sharesByAccountId.get(account.id) != null ? row.sharesByAccountId.get(account.id).stripTrailingZeros().toPlainString() : ''}">
+                        <input type="text" inputmode="decimal" class="cost-cell" placeholder="avg cost" autocomplete="off"
+                               th:title="'Average purchase price per share' + (${account.currency != null} ? ' in ' + ${account.currency} : '')"
+                               th:data-account-id="${account.id}" th:data-stock-id="${row.stockId}"
+                               th:value="${row.averageCostByAccountId.get(account.id) != null ? row.averageCostByAccountId.get(account.id).stripTrailingZeros().toPlainString() : ''}"
+                               th:data-original="${row.averageCostByAccountId.get(account.id) != null ? row.averageCostByAccountId.get(account.id).stripTrailingZeros().toPlainString() : ''}">
                         <small class="cell-value" data-live
-                               th:text="${row.valueByAccountId.get(account.id) != null ? row.market.currencySymbol + #numbers.formatDecimal(row.valueByAccountId.get(account.id), 1, 'COMMA', 2, 'POINT') : ''}"></small>
+                               th:text="${row.valueByAccountId.get(account.id) != null ? row.currencySymbolByAccountId.get(account.id) + #numbers.formatDecimal(row.valueByAccountId.get(account.id), 1, 'COMMA', 2, 'POINT') : ''}"></small>
                     </td>
                     <td class="num total-col" data-live>
                         <span th:text="${#numbers.formatDecimal(row.totalShares, 1, 'COMMA', 4, 'POINT')}"></span> sh
                         <br/>
                         <strong th:text="${row.market.currencySymbol + #numbers.formatDecimal(row.totalValue, 1, 'COMMA', 2, 'POINT')}"></strong>
+                    </td>
+                    <td class="num" data-live>
+                        <th:block th:if="${row.gainLossUsd != null}">
+                            <strong th:class="${row.gainLossUsd.signum() >= 0 ? 'gain' : 'loss'}"
+                                    th:text="${(row.gainLossUsd.signum() >= 0 ? '+$' : '-$') + #numbers.formatDecimal(row.gainLossUsd.abs(), 1, 'COMMA', 2, 'POINT')}"></strong>
+                            <br/>
+                            <small th:if="${row.gainLossPercent != null}" th:class="${row.gainLossUsd.signum() >= 0 ? 'gain' : 'loss'}"
+                                   th:text="${(row.gainLossPercent.signum() >= 0 ? '+' : '') + row.gainLossPercent + '%'}"></small>
+                        </th:block>
+                        <th:block th:if="${row.gainLossUsd == null}">-</th:block>
                     </td>
                 </tr>
                 </tbody>
@@ -86,12 +103,24 @@
                     <td class="num total-col">
                         <strong th:text="${#numbers.formatDecimal(entry.value, 1, 'COMMA', 2, 'POINT') + ' ' + entry.key}"></strong>
                     </td>
+                    <td></td>
+                </tr>
+                <tr th:if="${portfolio.totalGainLossUsd() != null}">
+                    <td th:colspan="${3 + portfolio.accounts().size() + 1}" class="num grand-total-label">Total Gain / Loss (USD)</td>
+                    <td class="num total-col"></td>
+                    <td class="num">
+                        <strong th:class="${portfolio.totalGainLossUsd().signum() >= 0 ? 'gain' : 'loss'}"
+                                th:text="${(portfolio.totalGainLossUsd().signum() >= 0 ? '+$' : '-$') + #numbers.formatDecimal(portfolio.totalGainLossUsd().abs(), 1, 'COMMA', 2, 'POINT')}"></strong>
+                        <br/>
+                        <small th:if="${portfolio.totalGainLossPercent() != null}" th:class="${portfolio.totalGainLossUsd().signum() >= 0 ? 'gain' : 'loss'}"
+                               th:text="${(portfolio.totalGainLossPercent().signum() >= 0 ? '+' : '') + portfolio.totalGainLossPercent() + '%'}"></small>
+                    </td>
                 </tr>
                 </tfoot>
             </table>
         </div>
         <p th:if="${portfolio.rows().isEmpty()}" class="muted">No holdings yet. Add a trading account and some shares below to get started.</p>
-        <p th:if="${!portfolio.rows().isEmpty()}" class="muted small-note">Values are shown in each stock's own currency (USD / CAD / INR) — totals are grouped by currency rather than combined into one number.</p>
+        <p th:if="${!portfolio.rows().isEmpty()}" class="muted small-note">Price and Total are in each stock's own currency; per-account values and average costs are in that account's currency. Gain / Loss is converted to USD at the current exchange rate.</p>
     </section>
 
     </div>
@@ -109,6 +138,13 @@
                     Broker (optional)
                     <input type="text" name="broker" placeholder="e.g. Fidelity">
                 </label>
+                <label>
+                    Currency
+                    <select name="currency" title="Amounts in this account are shown in this currency">
+                        <option th:each="c : ${currencies}" th:value="${c}" th:text="${c}"></option>
+                        <option value="">Each stock's own currency</option>
+                    </select>
+                </label>
                 <button type="submit" class="btn btn-secondary">Add Account</button>
             </form>
         </section>
@@ -120,7 +156,7 @@
         <div class="table-scroll" th:if="${!accounts.isEmpty()}">
             <table class="portfolio-table manage-table">
                 <thead>
-                <tr><th>Account Name</th><th>Broker</th><th></th></tr>
+                <tr><th>Account Name</th><th>Broker</th><th>Currency</th><th></th></tr>
                 </thead>
                 <tbody>
                 <tr th:each="account : ${accounts}">
@@ -131,6 +167,12 @@
                     <td>
                         <input type="text" name="broker" th:value="${account.broker}"
                                th:attr="form='update-' + ${account.id}">
+                    </td>
+                    <td>
+                        <select name="currency" th:attr="form='update-' + ${account.id}">
+                            <option th:each="c : ${currencies}" th:value="${c}" th:text="${c}" th:selected="${c == account.currency}"></option>
+                            <option value="" th:selected="${account.currency == null}">Stock's own</option>
+                        </select>
                     </td>
                     <td class="manage-actions">
                         <form th:id="'update-' + ${account.id}" th:action="@{/accounts/{id}/update(id=${account.id})}" method="post">
@@ -198,8 +240,9 @@
                         <textarea id="ai-prompt" rows="4" required placeholder="e.g. In two sentences, what is a P/E ratio?"></textarea>
                     </label>
                     <button type="submit" id="ai-send-btn" class="btn btn-primary">Send</button>
+                    <button type="button" id="ai-cancel-btn" class="btn btn-danger" hidden>Cancel</button>
                 </form>
-                <pre id="ai-response" class="ai-response" hidden></pre>
+                <div id="ai-response" class="ai-response" hidden></div>
             </section>
         </div>
     </div>
@@ -210,7 +253,7 @@
         <h2>Portfolio Analysis</h2>
         <button type="button" class="modal-close" id="analysis-close" aria-label="Close">&times;</button>
     </div>
-    <pre id="analysis-output" class="ai-response"></pre>
+    <div id="analysis-output" class="ai-response"></div>
     <div class="ai-actions analysis-actions">
         <button type="button" id="analysis-cancel" class="btn btn-danger" hidden>Cancel Analysis</button>
     </div>
@@ -265,6 +308,7 @@
             </form>
 </dialog>
 
+<script th:src="@{/js/markdown.js}"></script>
 <script th:src="@{/js/app.js}"></script>
 </body>
 </html>

@@ -35,15 +35,17 @@ public class PortfolioController {
         model.addAttribute("portfolio", portfolioService.buildPortfolioView());
         model.addAttribute("accounts", accountRepository.findAll());
         model.addAttribute("markets", Market.values());
+        model.addAttribute("currencies", com.stocks.tracker.model.Currencies.SUPPORTED);
         return "index";
     }
 
     @PostMapping("/accounts")
     public String createAccount(@RequestParam String name,
                                  @RequestParam(required = false) String broker,
+                                 @RequestParam(required = false) String currency,
                                  RedirectAttributes redirectAttributes) {
         try {
-            portfolioService.createAccount(name, broker);
+            portfolioService.createAccount(name, broker, currency);
             redirectAttributes.addFlashAttribute("success", "Account \"" + name + "\" created.");
         } catch (Exception e) {
             redirectAttributes.addFlashAttribute("error", "Could not create account: " + e.getMessage());
@@ -55,9 +57,10 @@ public class PortfolioController {
     public String updateAccount(@PathVariable Long id,
                                 @RequestParam String name,
                                 @RequestParam(required = false) String broker,
+                                @RequestParam(required = false) String currency,
                                 RedirectAttributes redirectAttributes) {
         try {
-            portfolioService.updateAccount(id, name, broker);
+            portfolioService.updateAccount(id, name, broker, currency);
             redirectAttributes.addFlashAttribute("success", "Account updated.");
         } catch (Exception e) {
             redirectAttributes.addFlashAttribute("error", "Could not update account: " + e.getMessage());
@@ -104,6 +107,22 @@ public class PortfolioController {
             String text = shares == null ? "" : shares.trim().replace(",", "");
             portfolioService.setShares(accountId, stockId,
                     text.isEmpty() || text.equals("-") ? BigDecimal.ZERO : new BigDecimal(text));
+            return org.springframework.http.ResponseEntity.noContent().build();
+        } catch (NumberFormatException e) {
+            return org.springframework.http.ResponseEntity.badRequest().body("Enter a valid number.");
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/holdings/cost")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<String> setAverageCost(@RequestParam Long accountId,
+                                                                          @RequestParam Long stockId,
+                                                                          @RequestParam(required = false) String cost) {
+        try {
+            String text = cost == null ? "" : cost.trim().replace(",", "");
+            portfolioService.setAverageCost(accountId, stockId, text.isEmpty() ? null : new BigDecimal(text));
             return org.springframework.http.ResponseEntity.noContent().build();
         } catch (NumberFormatException e) {
             return org.springframework.http.ResponseEntity.badRequest().body("Enter a valid number.");
@@ -180,7 +199,7 @@ public class PortfolioController {
                 + "exposure by market and currency, notable gains and losses versus cost, and any suggestions worth "
                 + "considering. Be specific and refer to holdings by symbol. Prices are the last refreshed prices.\n\n"
                 + summary;
-        var job = analysisJobService.start(request);
+        var job = analysisJobService.start("analysis", request);
         return org.springframework.http.ResponseEntity.accepted().body(java.util.Map.of("id", job.getId()));
     }
 
@@ -212,14 +231,15 @@ public class PortfolioController {
         return org.springframework.http.ResponseEntity.ok(body);
     }
 
+    /** Starts a test prompt as a background job; poll and cancel via the /api/ai/analyze/{id} endpoints. */
     @PostMapping("/api/ai/chat")
     @ResponseBody
     public org.springframework.http.ResponseEntity<?> aiChat(@RequestParam String prompt) {
-        try {
-            return org.springframework.http.ResponseEntity.ok(llmService.chat(prompt));
-        } catch (Exception e) {
-            return org.springframework.http.ResponseEntity.badRequest().body(e.getMessage());
+        if (prompt == null || prompt.isBlank()) {
+            return org.springframework.http.ResponseEntity.badRequest().body("Prompt is required.");
         }
+        var job = analysisJobService.start("chat", prompt);
+        return org.springframework.http.ResponseEntity.accepted().body(java.util.Map.of("id", job.getId()));
     }
 
     @ExceptionHandler(StockLookupException.class)

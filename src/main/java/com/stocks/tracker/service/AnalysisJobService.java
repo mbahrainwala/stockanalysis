@@ -11,10 +11,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 /**
- * Runs portfolio analyses in the background. Local models can take many minutes, so the
+ * Runs portfolio analyses and AI test prompts in the background. Local models can take many minutes, so the
  * HTTP request that starts an analysis returns immediately and the page polls for the
  * result; no HTTP request is held open and the model call itself has no timeout.
- * Only one analysis runs at a time so a local model isn't asked to do several at once.
+ * Only one model call runs at a time so a local model isn't asked to do several at once.
  */
 @Service
 public class AnalysisJobService {
@@ -25,12 +25,17 @@ public class AnalysisJobService {
 
     public static final class Job {
         private final String id = UUID.randomUUID().toString();
+        private final String kind;
         private final long startedAt = System.currentTimeMillis();
         private volatile State state = State.RUNNING;
         private volatile LlmService.ChatResult result;
         private volatile String error;
         private volatile long finishedAt;
         private volatile Future<?> future;
+
+        Job(String kind) {
+            this.kind = kind;
+        }
 
         public String getId() {
             return id;
@@ -65,14 +70,14 @@ public class AnalysisJobService {
         this.llmService = llmService;
     }
 
-    /** Starts an analysis, or returns the one already running. */
-    public synchronized Job start(String prompt) {
+    /** Starts an analysis, or returns the one of the same kind already running. */
+    public synchronized Job start(String kind, String prompt) {
         for (Job existing : jobs.values()) {
-            if (existing.state == State.RUNNING) {
+            if (existing.state == State.RUNNING && existing.kind.equals(kind)) {
                 return existing;
             }
         }
-        Job job = new Job();
+        Job job = new Job(kind);
         jobs.put(job.id, job);
         while (jobs.size() > MAX_JOBS_KEPT) {
             jobs.remove(jobs.keySet().iterator().next());

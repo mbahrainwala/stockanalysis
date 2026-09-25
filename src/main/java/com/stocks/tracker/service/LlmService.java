@@ -39,7 +39,19 @@ public class LlmService {
      * Built-in instructions that are always sent first as the system prompt.
      * TODO: fill in the real prompt; the user's custom prompt is appended after it.
      */
-    public static final String HARDCODED_PROMPT = "";
+    public static final String HARDCODED_PROMPT = """
+            If asked for current and relevant information, use the tools to find the current date/time and then \
+            fetch the relevant information. Training data may be outdated.
+
+            You have access to a wide variety of tools for coding/math/physics/etc...use them. Do not hallucinate \
+            and give made up answers.
+
+            For most questions make sure to think about an answer as the solution may not be obvious. e.g. "I need \
+            to take my car to the car wash and the car wash is 100m away. should I walk or drive there?" the answer \
+            should be "Drive" as you need to drive the car to wash it.
+
+            Always use html_to_markdown to get a clean markdown of any webpage you get with the web_search tool.
+            """;
 
     // Keys keep their original "ollama." prefix so previously saved settings still load.
     private static final String KEY_ENDPOINT = "ollama.endpoint";

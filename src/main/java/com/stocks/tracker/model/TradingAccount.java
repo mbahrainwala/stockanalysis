@@ -20,6 +20,10 @@ public class TradingAccount {
 
     private String broker;
 
+    /** Currency this account is denominated in; null means each stock's own currency (no conversion). */
+    @Column(length = 3)
+    private String currency;
+
     @OneToMany(mappedBy = "tradingAccount", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Holding> holdings = new ArrayList<>();
 
@@ -53,6 +57,14 @@ public class TradingAccount {
 
     public void setBroker(String broker) {
         this.broker = broker;
+    }
+
+    public String getCurrency() {
+        return currency;
+    }
+
+    public void setCurrency(String currency) {
+        this.currency = currency;
     }
 
     public List<Holding> getHoldings() {

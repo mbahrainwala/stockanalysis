@@ -3,6 +3,7 @@ package com.stocks.tracker.service;
 import com.stocks.tracker.dto.PortfolioRow;
 import com.stocks.tracker.dto.PortfolioView;
 import com.stocks.tracker.dto.QuoteResult;
+import com.stocks.tracker.model.Currencies;
 import com.stocks.tracker.model.Holding;
 import com.stocks.tracker.model.Market;
 import com.stocks.tracker.model.Stock;
@@ -32,15 +33,72 @@ public class PortfolioService {
     private final StockRepository stockRepository;
     private final HoldingRepository holdingRepository;
     private final MarketDataService marketDataService;
+    private final ExchangeRateService exchangeRates;
 
     public PortfolioService(TradingAccountRepository accountRepository,
                              StockRepository stockRepository,
                              HoldingRepository holdingRepository,
-                             MarketDataService marketDataService) {
+                             MarketDataService marketDataService,
+                             ExchangeRateService exchangeRates) {
         this.accountRepository = accountRepository;
         this.stockRepository = stockRepository;
         this.holdingRepository = holdingRepository;
         this.marketDataService = marketDataService;
+        this.exchangeRates = exchangeRates;
+    }
+
+    private static String currencyOf(Stock stock) {
+        return stock.getCurrency() == null || stock.getCurrency().isBlank()
+                ? stock.getMarket().getDefaultCurrency() : stock.getCurrency();
+    }
+
+    /**
+     * A holding's figures in its account's currency (or the stock's own currency when the account
+     * has none, or when no exchange rate is available), plus gain/loss converted to USD.
+     * Gain/loss is only computed when the average cost is known and the price could be converted.
+     */
+    private record Metrics(String currency, BigDecimal price, BigDecimal nativeValue, BigDecimal value,
+                           BigDecimal averageCost, BigDecimal gain, BigDecimal gainUsd, BigDecimal costUsd) {
+    }
+
+    private Metrics metrics(Holding h, Map<String, BigDecimal> ratesUsed) {
+        Stock stock = h.getStock();
+        String stockCurrency = currencyOf(stock);
+        String accountCurrency = h.getTradingAccount().getCurrency();
+        BigDecimal stockPrice = stock.getCurrentPrice();
+        BigDecimal nativeValue = h.getShares().multiply(stockPrice == null ? BigDecimal.ZERO : stockPrice)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        String currency = accountCurrency == null ? stockCurrency : accountCurrency;
+        BigDecimal toDisplay = exchangeRates.rate(stockCurrency, currency);
+        if (toDisplay == null) {
+            // No rate available: show the stock's own currency rather than a wrong number.
+            currency = stockCurrency;
+            toDisplay = BigDecimal.ONE;
+        } else if (ratesUsed != null && !stockCurrency.equals(currency)) {
+            ratesUsed.put(stockCurrency + "->" + currency, toDisplay);
+        }
+        boolean converted = accountCurrency == null || currency.equals(accountCurrency);
+
+        BigDecimal price = stockPrice == null ? null : stockPrice.multiply(toDisplay);
+        BigDecimal value = price == null ? BigDecimal.ZERO : h.getShares().multiply(price).setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal cost = h.getAverageCost();
+        BigDecimal gain = null;
+        BigDecimal gainUsd = null;
+        BigDecimal costUsd = null;
+        if (converted && price != null && cost != null && cost.signum() > 0) {
+            gain = price.subtract(cost).multiply(h.getShares()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal toUsd = exchangeRates.rate(currency, Currencies.BASE);
+            if (toUsd != null) {
+                if (ratesUsed != null && !currency.equals(Currencies.BASE)) {
+                    ratesUsed.put(currency + "->" + Currencies.BASE, toUsd);
+                }
+                gainUsd = gain.multiply(toUsd);
+                costUsd = cost.multiply(h.getShares()).multiply(toUsd);
+            }
+        }
+        return new Metrics(currency, price, nativeValue, value, cost, gain, gainUsd, costUsd);
     }
 
     @Transactional(readOnly = true)
@@ -53,35 +111,54 @@ public class PortfolioService {
             Stock stock = holding.getStock();
             PortfolioRow row = rowsByStockId.computeIfAbsent(stock.getId(),
                     id -> new PortfolioRow(stock.getId(), stock.getSymbol(), stock.getMarket(),
-                            stock.getCompanyName(), stock.getCurrency(), stock.getCurrentPrice()));
+                            stock.getCompanyName(), currencyOf(stock), stock.getCurrentPrice()));
 
-            BigDecimal price = stock.getCurrentPrice() == null ? BigDecimal.ZERO : stock.getCurrentPrice();
-            BigDecimal value = holding.getShares().multiply(price).setScale(2, RoundingMode.HALF_UP);
-            row.putAccountShares(holding.getTradingAccount().getId(), holding.getShares(), value);
+            Metrics m = metrics(holding, null);
+            row.putHolding(holding.getTradingAccount().getId(), holding.getShares(), m.nativeValue(), m.value(),
+                    Currencies.symbol(m.currency()), m.averageCost(), m.gainUsd(), m.costUsd());
         }
 
         List<PortfolioRow> rows = rowsByStockId.values().stream()
                 .sorted((a, b) -> a.getSymbol().compareToIgnoreCase(b.getSymbol()))
                 .toList();
 
-        // Grand totals are kept separate per currency: summing USD, CAD and
+        // Grand totals of value are kept separate per currency: summing USD, CAD and
         // INR holdings into one number would be meaningless.
         Map<String, BigDecimal> grandTotalsByCurrency = new TreeMap<>();
+        BigDecimal totalGain = null;
+        BigDecimal totalCost = BigDecimal.ZERO;
         for (PortfolioRow row : rows) {
             grandTotalsByCurrency.merge(row.getCurrency(), row.getTotalValue(), BigDecimal::add);
+            if (row.getGainLossUsd() != null) {
+                totalGain = (totalGain == null ? BigDecimal.ZERO : totalGain).add(row.getGainLossUsd());
+                totalCost = totalCost.add(row.getCostUsd());
+            }
         }
+        BigDecimal totalPercent = totalGain == null || totalCost.signum() <= 0 ? null
+                : totalGain.multiply(BigDecimal.valueOf(100)).divide(totalCost, 1, RoundingMode.HALF_UP);
 
-        return new PortfolioView(accounts, rows, grandTotalsByCurrency);
+        return new PortfolioView(accounts, rows, grandTotalsByCurrency, totalGain, totalPercent);
     }
 
     @Transactional
-    public TradingAccount createAccount(String name, String broker) {
-        return accountRepository.save(new TradingAccount(name.trim(), broker == null ? null : broker.trim()));
+    public TradingAccount createAccount(String name, String broker, String currency) {
+        TradingAccount account = new TradingAccount(name.trim(), broker == null ? null : broker.trim());
+        account.setCurrency(Currencies.normalize(currency));
+        return accountRepository.save(account);
+    }
+
+    private static String usd(BigDecimal amount) {
+        return (amount.signum() >= 0 ? "+$" : "-$") + amount.abs().setScale(2, RoundingMode.HALF_UP).toPlainString() + " USD";
+    }
+
+    private static String pct(BigDecimal percent) {
+        return (percent.signum() > 0 ? "+" : "") + percent.toPlainString() + "%";
     }
 
     /**
      * Plain-text description of every holding, grouped by account, for use in an LLM prompt.
-     * Returns null when there are no holdings. Values are in each stock's own currency.
+     * Returns null when there are no holdings. Amounts are in each account's currency, with
+     * gain/loss also converted to USD.
      */
     @Transactional(readOnly = true)
     public String buildPortfolioSummary() {
@@ -91,48 +168,76 @@ public class PortfolioService {
         }
         Map<String, List<Holding>> byAccount = new TreeMap<>();
         Map<String, BigDecimal> totalsByCurrency = new TreeMap<>();
+        Map<String, BigDecimal> ratesUsed = new TreeMap<>();
+        Map<String, BigDecimal[]> gainByStock = new TreeMap<>(); // symbol -> {gainUsd, costUsd}
+        BigDecimal totalGainUsd = null;
         for (Holding h : holdings) {
             TradingAccount a = h.getTradingAccount();
-            String label = a.getName() + (a.getBroker() == null || a.getBroker().isBlank() ? "" : " (" + a.getBroker() + ")");
+            String label = a.getName() + (a.getBroker() == null || a.getBroker().isBlank() ? "" : " (" + a.getBroker() + ")")
+                    + (a.getCurrency() == null ? "" : " [" + a.getCurrency() + " account]");
             byAccount.computeIfAbsent(label, k -> new java.util.ArrayList<>()).add(h);
         }
 
-        StringBuilder sb = new StringBuilder("Portfolio holdings (values are in each stock's own currency):\n");
+        StringBuilder sb = new StringBuilder("Portfolio holdings (amounts are in each account's currency; "
+                + "gain/loss is also converted to USD):\n");
         for (Map.Entry<String, List<Holding>> entry : byAccount.entrySet()) {
             sb.append("\nAccount: ").append(entry.getKey()).append('\n');
             entry.getValue().sort((x, y) -> x.getStock().getSymbol().compareToIgnoreCase(y.getStock().getSymbol()));
             for (Holding h : entry.getValue()) {
                 Stock s = h.getStock();
-                BigDecimal price = s.getCurrentPrice();
-                String currency = s.getCurrency() == null ? s.getMarket().getDefaultCurrency() : s.getCurrency();
+                Metrics m = metrics(h, ratesUsed);
                 sb.append("- ").append(s.getSymbol()).append(" [").append(s.getMarket().getLabel()).append("] ")
                         .append(s.getCompanyName()).append(": ")
                         .append(h.getShares().stripTrailingZeros().toPlainString()).append(" shares");
-                if (price != null) {
-                    BigDecimal value = h.getShares().multiply(price).setScale(2, RoundingMode.HALF_UP);
-                    totalsByCurrency.merge(currency, value, BigDecimal::add);
-                    sb.append(", price ").append(price.setScale(2, RoundingMode.HALF_UP).toPlainString()).append(' ').append(currency)
-                            .append(", value ").append(value.toPlainString()).append(' ').append(currency);
+                if (m.price() != null) {
+                    totalsByCurrency.merge(m.currency(), m.value(), BigDecimal::add);
+                    sb.append(", price ").append(m.price().setScale(2, RoundingMode.HALF_UP).toPlainString()).append(' ').append(m.currency())
+                            .append(", value ").append(m.value().toPlainString()).append(' ').append(m.currency());
                 }
-                BigDecimal cost = h.getAverageCost();
-                if (cost != null && cost.signum() > 0) {
-                    sb.append(", avg cost ").append(cost.setScale(2, RoundingMode.HALF_UP).toPlainString());
-                    if (price != null) {
-                        BigDecimal pct = price.subtract(cost).multiply(BigDecimal.valueOf(100))
-                                .divide(cost, 1, RoundingMode.HALF_UP);
-                        sb.append(" (").append(pct.signum() > 0 ? "+" : "").append(pct.toPlainString()).append("% vs cost)");
+                if (m.averageCost() != null && m.averageCost().signum() > 0) {
+                    sb.append(", avg cost ").append(m.averageCost().setScale(2, RoundingMode.HALF_UP).toPlainString())
+                            .append(' ').append(m.currency());
+                    if (m.gain() != null) {
+                        BigDecimal p = m.price().subtract(m.averageCost()).multiply(BigDecimal.valueOf(100))
+                                .divide(m.averageCost(), 1, RoundingMode.HALF_UP);
+                        sb.append(" (").append(pct(p)).append(" vs cost, ")
+                                .append(m.gain().signum() >= 0 ? "gain " : "loss ").append(m.gain().abs().toPlainString())
+                                .append(' ').append(m.currency());
+                        if (m.gainUsd() != null) {
+                            sb.append(" = ").append(usd(m.gainUsd()));
+                            gainByStock.merge(s.getSymbol(), new BigDecimal[]{m.gainUsd(), m.costUsd()},
+                                    (x, y) -> new BigDecimal[]{x[0].add(y[0]), x[1].add(y[1])});
+                            totalGainUsd = (totalGainUsd == null ? BigDecimal.ZERO : totalGainUsd).add(m.gainUsd());
+                        }
+                        sb.append(')');
                     }
                 }
                 sb.append('\n');
             }
         }
+        if (!gainByStock.isEmpty()) {
+            sb.append("\nGain/loss per stock across all accounts, in USD:\n");
+            gainByStock.forEach((symbol, g) -> {
+                sb.append("- ").append(symbol).append(": ").append(usd(g[0]));
+                if (g[1].signum() > 0) {
+                    sb.append(" (").append(pct(g[0].multiply(BigDecimal.valueOf(100)).divide(g[1], 1, RoundingMode.HALF_UP))).append(')');
+                }
+                sb.append('\n');
+            });
+            sb.append("Total gain/loss: ").append(usd(totalGainUsd)).append('\n');
+        }
         sb.append("\nTotal value by currency:\n");
         totalsByCurrency.forEach((cur, total) -> sb.append("- ").append(cur).append(": ").append(total.toPlainString()).append('\n'));
+        if (!ratesUsed.isEmpty()) {
+            sb.append("\nExchange rates used:\n");
+            ratesUsed.forEach((pair, rate) -> sb.append("- 1 ").append(pair.replace("->", " = "))
+                    .append(' ').append(rate.setScale(4, RoundingMode.HALF_UP).toPlainString()).append('\n'));
+        }
         return sb.toString();
     }
 
     @Transactional
-    public TradingAccount updateAccount(Long accountId, String name, String broker) {
+    public TradingAccount updateAccount(Long accountId, String name, String broker, String currency) {
         TradingAccount account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new IllegalArgumentException("Account not found."));
         String newName = name == null ? "" : name.trim();
@@ -146,6 +251,7 @@ public class PortfolioService {
         });
         account.setName(newName);
         account.setBroker(broker == null || broker.isBlank() ? null : broker.trim());
+        account.setCurrency(Currencies.normalize(currency));
         return account;
     }
 
@@ -236,6 +342,18 @@ public class PortfolioService {
         holdingRepository.save(holding);
     }
 
+    /** Sets the average purchase price of an account's existing position; blank clears it. */
+    @Transactional
+    public void setAverageCost(Long accountId, Long stockId, BigDecimal averageCost) {
+        if (averageCost != null && averageCost.signum() < 0) {
+            throw new IllegalArgumentException("Average cost cannot be negative");
+        }
+        Holding holding = holdingRepository.findByTradingAccountIdAndStockId(accountId, stockId)
+                .orElseThrow(() -> new IllegalArgumentException("Add shares to this account before setting an average cost."));
+        holding.setAverageCost(averageCost == null ? null : averageCost.setScale(4, RoundingMode.HALF_UP));
+        holdingRepository.save(holding);
+    }
+
     /**
      * Refreshes the current market price for every stock currently held.
      * Failures for individual symbols are logged and skipped so one bad
@@ -243,6 +361,7 @@ public class PortfolioService {
      */
     @Transactional
     public int refreshAllPrices() {
+        exchangeRates.invalidate();
         List<Stock> stocks = stockRepository.findAll();
         int updated = 0;
         for (Stock stock : stocks) {
