@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>Stock Tracker</title>
+    <link rel="stylesheet" th:href="@{/css/style.css}">
+</head>
+<body>
+<div class="page">
+    <header class="page-header">
+        <h1>Stock Tracker</h1>
+        <nav class="tabs" role="tablist">
+            <button type="button" class="tab active" role="tab" data-tab="portfolio">Portfolio</button>
+            <button type="button" class="tab" role="tab" data-tab="accounts">Accounts</button>
+            <button type="button" class="tab" role="tab" data-tab="ai">AI Setup</button>
+        </nav>
+        <form th:action="@{/prices/refresh}" method="post">
+            <button type="submit" class="btn btn-primary">Refresh Market Prices</button>
+        </form>
+    </header>
+
+    <div class="alert alert-success" th:if="${success}" th:text="${success}"></div>
+    <div class="alert alert-error" th:if="${error}" th:text="${error}"></div>
+
+    <div class="tab-panel" id="tab-portfolio">
+    <section class="card portfolio-card">
+        <div class="card-title-row">
+            <h2>Portfolio</h2>
+            <div class="title-actions">
+            <button type="button" id="analyze-btn" class="btn btn-secondary" th:disabled="${portfolio.rows().isEmpty()}"
+                    title="Analyze this portfolio with your configured AI model">Analyze</button>
+            <button type="button" id="add-shares-open" class="btn btn-secondary" th:disabled="${accounts.isEmpty()}"
+                    title="Add shares with lookup and company-name search">Add Shares&hellip;</button>
+            <button type="button" id="quick-add-toggle" class="btn btn-primary btn-plus" title="Quick add a stock" aria-expanded="false"
+                    th:disabled="${accounts.isEmpty()}">+</button>
+            </div>
+        </div>
+        <form th:action="@{/holdings}" method="post" id="quick-add-form" class="quick-add" hidden>
+            <select name="market" id="quick-market" required title="Exchange">
+                <option th:each="m : ${markets}" th:value="${m.name()}" th:text="${m.label}"></option>
+            </select>
+            <input type="text" name="symbol" id="quick-symbol" required placeholder="Symbol, e.g. AAPL" autocomplete="off">
+            <select name="accountId" id="quick-account" required title="Account">
+                <option th:each="account : ${accounts}" th:value="${account.id}" th:text="${account.name}"></option>
+            </select>
+            <input type="number" name="shares" step="0.1" min="0.1" value="1" required title="Shares" class="quick-shares">
+            <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+        <div class="table-scroll" th:if="${!portfolio.rows().isEmpty()}">
+            <table class="portfolio-table">
+                <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Market</th>
+                    <th>Company</th>
+                    <th class="num">Price</th>
+                    <th class="num" th:each="account : ${portfolio.accounts()}" th:text="${account.name}"></th>
+                    <th class="num total-col">Total</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="row : ${portfolio.rows()}">
+                    <td class="symbol" th:text="${row.symbol}"></td>
+                    <td><span class="market-badge" th:text="${row.market.label}"></span></td>
+                    <td th:text="${row.companyName}"></td>
+                    <td class="num" th:text="${row.market.currencySymbol + #numbers.formatDecimal(row.currentPrice, 1, 'COMMA', 2, 'POINT')}"></td>
+                    <td class="num cell-td" th:each="account : ${portfolio.accounts()}">
+                        <input type="text" inputmode="decimal" class="share-cell" placeholder="-" autocomplete="off"
+                               th:data-account-id="${account.id}" th:data-stock-id="${row.stockId}"
+                               th:value="${row.sharesByAccountId.get(account.id) != null ? row.sharesByAccountId.get(account.id).stripTrailingZeros().toPlainString() : ''}"
+                               th:data-original="${row.sharesByAccountId.get(account.id) != null ? row.sharesByAccountId.get(account.id).stripTrailingZeros().toPlainString() : ''}">
+                        <small class="cell-value" data-live
+                               th:text="${row.valueByAccountId.get(account.id) != null ? row.market.currencySymbol + #numbers.formatDecimal(row.valueByAccountId.get(account.id), 1, 'COMMA', 2, 'POINT') : ''}"></small>
+                    </td>
+                    <td class="num total-col" data-live>
+                        <span th:text="${#numbers.formatDecimal(row.totalShares, 1, 'COMMA', 4, 'POINT')}"></span> sh
+                        <br/>
+                        <strong th:text="${row.market.currencySymbol + #numbers.formatDecimal(row.totalValue, 1, 'COMMA', 2, 'POINT')}"></strong>
+                    </td>
+                </tr>
+                </tbody>
+                <tfoot data-live>
+                <tr th:each="entry : ${portfolio.grandTotalsByCurrency()}">
+                    <td th:colspan="${3 + portfolio.accounts().size() + 1}" class="num grand-total-label"
+                        th:text="'Grand Total (' + ${entry.key} + ')'"></td>
+                    <td class="num total-col">
+                        <strong th:text="${#numbers.formatDecimal(entry.value, 1, 'COMMA', 2, 'POINT') + ' ' + entry.key}"></strong>
+                    </td>
+                </tr>
+                </tfoot>
+            </table>
+        </div>
+        <p th:if="${portfolio.rows().isEmpty()}" class="muted">No holdings yet. Add a trading account and some shares below to get started.</p>
+        <p th:if="${!portfolio.rows().isEmpty()}" class="muted small-note">Values are shown in each stock's own currency (USD / CAD / INR) — totals are grouped by currency rather than combined into one number.</p>
+    </section>
+
+    </div>
+
+    <div class="tab-panel" id="tab-accounts" hidden>
+        <div class="accounts-grid">
+        <section class="card">
+            <h2>Add Trading Account</h2>
+            <form th:action="@{/accounts}" method="post" class="form-grid">
+                <label>
+                    Account Name
+                    <input type="text" name="name" required placeholder="e.g. Fidelity IRA">
+                </label>
+                <label>
+                    Broker (optional)
+                    <input type="text" name="broker" placeholder="e.g. Fidelity">
+                </label>
+                <button type="submit" class="btn btn-secondary">Add Account</button>
+            </form>
+        </section>
+
+        </div>
+    <section class="card">
+        <h2>Manage Accounts</h2>
+        <p th:if="${accounts.isEmpty()}" class="muted">No accounts yet.</p>
+        <div class="table-scroll" th:if="${!accounts.isEmpty()}">
+            <table class="portfolio-table manage-table">
+                <thead>
+                <tr><th>Account Name</th><th>Broker</th><th></th></tr>
+                </thead>
+                <tbody>
+                <tr th:each="account : ${accounts}">
+                    <td>
+                        <input type="text" name="name" required th:value="${account.name}"
+                               th:attr="form='update-' + ${account.id}">
+                    </td>
+                    <td>
+                        <input type="text" name="broker" th:value="${account.broker}"
+                               th:attr="form='update-' + ${account.id}">
+                    </td>
+                    <td class="manage-actions">
+                        <form th:id="'update-' + ${account.id}" th:action="@{/accounts/{id}/update(id=${account.id})}" method="post">
+                            <button type="submit" class="btn btn-secondary">Save</button>
+                        </form>
+                        <form th:action="@{/accounts/{id}/delete(id=${account.id})}" method="post"
+                              th:data-name="${account.name}"
+                              onsubmit="return confirm('Delete account &quot;' + this.dataset.name + '&quot; and ALL its holdings? This cannot be undone.')">
+                            <button type="submit" class="btn btn-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+    </div>
+
+    <div class="tab-panel" id="tab-ai" hidden>
+        <div class="ai-layout">
+            <section class="card">
+                <h2>AI Provider</h2>
+                <p class="muted small-note">Use a local or remote <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> (default <code>http://localhost:11434</code>) or <a href="https://lmstudio.ai" target="_blank" rel="noopener">LM Studio</a> (default <code>http://localhost:1234</code>) server. With Auto, the provider is detected from the endpoint.</p>
+                <form id="ai-config-form" class="form-grid">
+                    <div class="radio-group" role="radiogroup" aria-label="Provider">
+                        <label class="radio"><input type="radio" name="ai-provider" value="auto" checked> Auto-detect</label>
+                        <label class="radio"><input type="radio" name="ai-provider" value="ollama"> Ollama</label>
+                        <label class="radio"><input type="radio" name="ai-provider" value="lmstudio"> LM Studio</label>
+                    </div>
+                    <label>
+                        Endpoint URL
+                        <input type="text" id="ai-endpoint" placeholder="http://localhost:11434" autocomplete="off" required>
+                    </label>
+                    <label>
+                        Model
+                        <select id="ai-model"><option value="">(test the connection to load models)</option></select>
+                    </label>
+                    <div class="ai-actions">
+                        <button type="button" id="ai-test-btn" class="btn btn-secondary">Test Connection</button>
+                        <button type="submit" class="btn btn-primary">Save</button>
+                        <span id="ai-status" class="ai-status muted"></span>
+                    </div>
+                </form>
+            </section>
+            <section class="card">
+                <h2>Custom Prompt</h2>
+                <p class="muted small-note">Your own instructions, added after the app's built-in prompt and sent as the system prompt with every request.</p>
+                <form id="ai-prompt-form" class="form-grid">
+                    <label>
+                        Custom prompt (optional)
+                        <textarea id="ai-custom-prompt" rows="5" maxlength="1000" placeholder="e.g. I'm a long-term investor. Keep answers short and focus on fundamentals."></textarea>
+                    </label>
+                    <div class="ai-actions">
+                        <button type="submit" class="btn btn-primary">Save Prompt</button>
+                        <span id="ai-prompt-status" class="ai-status muted"></span>
+                    </div>
+                </form>
+            </section>
+            <section class="card">
+                <h2>Try It</h2>
+                <p class="muted small-note">Send a prompt to the saved endpoint and model to confirm everything works.</p>
+                <form id="ai-chat-form" class="form-grid">
+                    <label>
+                        Prompt
+                        <textarea id="ai-prompt" rows="4" required placeholder="e.g. In two sentences, what is a P/E ratio?"></textarea>
+                    </label>
+                    <button type="submit" id="ai-send-btn" class="btn btn-primary">Send</button>
+                </form>
+                <pre id="ai-response" class="ai-response" hidden></pre>
+            </section>
+        </div>
+    </div>
+</div>
+
+<dialog id="analysis-dialog" class="modal modal-wide">
+    <div class="modal-head">
+        <h2>Portfolio Analysis</h2>
+        <button type="button" class="modal-close" id="analysis-close" aria-label="Close">&times;</button>
+    </div>
+    <pre id="analysis-output" class="ai-response"></pre>
+    <div class="ai-actions analysis-actions">
+        <button type="button" id="analysis-cancel" class="btn btn-danger" hidden>Cancel Analysis</button>
+    </div>
+    <p class="muted small-note">AI-generated and may be inaccurate. This is not financial advice. Uses the last refreshed prices.</p>
+</dialog>
+
+<dialog id="add-shares-dialog" class="modal">
+    <div class="modal-head">
+        <h2>Add Shares</h2>
+        <button type="button" class="modal-close" id="add-shares-close" aria-label="Close">&times;</button>
+    </div>
+            <form th:action="@{/holdings}" method="post" class="form-grid" id="add-shares-form">
+                <label>
+                    Account
+                    <select name="accountId" required>
+                        <option th:each="account : ${accounts}" th:value="${account.id}" th:text="${account.name}"></option>
+                    </select>
+                </label>
+                <label>
+                    Market
+                    <select name="market" id="market-select" required>
+                        <option th:each="m : ${markets}" th:value="${m.name()}" th:text="${m.label}"></option>
+                    </select>
+                </label>
+                <label>
+                    Stock Symbol
+                    <span class="inline-input">
+                        <input type="text" name="symbol" id="symbol-input" required placeholder="e.g. AAPL, TD, RELIANCE" autocomplete="off">
+                        <button type="button" id="lookup-btn" class="btn btn-tiny">Lookup</button>
+                    </span>
+                    <small id="lookup-result" class="muted"></small>
+                </label>
+                <label>
+                    Don't know the symbol? Search by company name
+                    <span class="inline-input">
+                        <input type="text" id="name-search-input" placeholder="e.g. Apple, Royal Bank, Infosys" autocomplete="off">
+                        <button type="button" id="name-search-btn" class="btn btn-tiny">Search</button>
+                    </span>
+                    <small id="name-search-status" class="muted"></small>
+                    <ul id="name-search-results" class="search-results"></ul>
+                </label>
+                <label>
+                    Shares
+                    <input type="number" step="0.0001" min="0.0001" name="shares" required placeholder="e.g. 10">
+                </label>
+                <label>
+                    Price Paid Per Share (optional)
+                    <input type="number" step="0.0001" min="0" name="pricePaid" placeholder="defaults to current market price">
+                </label>
+                <button type="submit" class="btn btn-primary" th:disabled="${accounts.isEmpty()}">Add Shares</button>
+                <p th:if="${accounts.isEmpty()}" class="muted">Add a trading account first.</p>
+            </form>
+</dialog>
+
+<script th:src="@{/js/app.js}"></script>
+</body>
+</html>
