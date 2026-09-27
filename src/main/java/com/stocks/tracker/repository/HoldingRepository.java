@@ -13,4 +13,6 @@ public interface HoldingRepository extends JpaRepository<Holding, Long> {
     List<Holding> findAll();
 
     Optional<Holding> findByTradingAccountIdAndStockId(Long tradingAccountId, Long stockId);
+
+    boolean existsByStockId(Long stockId);
 }

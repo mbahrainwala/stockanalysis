@@ -65,8 +65,11 @@ public class LlmService {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
 
-    public LlmService(AppSettingRepository settings) {
+    private final AiContextProperties limits;
+
+    public LlmService(AppSettingRepository settings, AiContextProperties limits) {
         this.settings = settings;
+        this.limits = limits;
     }
 
     public record Config(String provider, String endpoint, String model, String customPrompt) {
@@ -218,14 +221,29 @@ public class LlmService {
         return new Status(true, LMSTUDIO, endpoint, "", models, null);
     }
 
+    /** One turn of a conversation; role is "user" or "assistant". */
+    public record Message(String role, String content) {
+    }
+
     public ChatResult chat(String prompt) {
         return chat(prompt, Duration.ofSeconds(180));
     }
 
     /** @param timeout maximum time to wait for the model's reply; null waits indefinitely (slow local models) */
     public ChatResult chat(String prompt, Duration timeout) {
-        Config config = getConfig();
         if (prompt == null || prompt.isBlank()) {
+            throw new IllegalArgumentException("Prompt is required.");
+        }
+        return chat(java.util.List.of(new Message("user", prompt)), null, timeout);
+    }
+
+    /**
+     * Multi-turn chat. {@code extraSystem}, if given, is added after the app's system prompt and the
+     * user's custom prompt (used to supply current data). The conversation must end with a user turn.
+     */
+    public ChatResult chat(java.util.List<Message> conversation, String extraSystem, Duration timeout) {
+        Config config = getConfig();
+        if (conversation == null || conversation.isEmpty() || !"user".equals(conversation.get(conversation.size() - 1).role())) {
             throw new IllegalArgumentException("Prompt is required.");
         }
         if (config.model().isBlank()) {
@@ -248,10 +266,27 @@ public class LlmService {
         body.put("stream", false);
         ArrayNode messages = body.putArray("messages");
         String system = buildSystemPrompt(config.customPrompt());
+        if (extraSystem != null && !extraSystem.isBlank()) {
+            system = system.isEmpty() ? extraSystem.strip() : system + "\n\n" + extraSystem.strip();
+        }
         if (!system.isEmpty()) {
             messages.addObject().put("role", "system").put("content", system);
         }
-        messages.addObject().put("role", "user").put("content", prompt);
+        for (Message m : conversation) {
+            messages.addObject().put("role", m.role()).put("content", m.content());
+        }
+
+        if (provider.equals(OLLAMA)) {
+            // Ollama silently truncates prompts to its small default context, which would cut off the
+            // instructions at the start of a long prompt, so ask for a window sized to this request.
+            int needed = TokenEstimator.estimate(system);
+            for (Message m : conversation) {
+                needed += TokenEstimator.estimate(m.content());
+            }
+            needed += limits.getOutputReserveTokens();
+            int numCtx = Math.min(limits.getWindowTokens(), Math.max(8192, (needed + 2047) / 2048 * 2048));
+            body.putObject("options").put("num_ctx", numCtx);
+        }
 
         String path = provider.equals(OLLAMA) ? "/api/chat" : "/v1/chat/completions";
         long start = System.currentTimeMillis();

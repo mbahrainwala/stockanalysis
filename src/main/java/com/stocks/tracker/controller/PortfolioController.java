@@ -6,6 +6,8 @@ import com.stocks.tracker.repository.TradingAccountRepository;
 import com.stocks.tracker.service.AnalysisJobService;
 import com.stocks.tracker.service.LlmService;
 import com.stocks.tracker.service.PortfolioService;
+import com.stocks.tracker.service.SpeculationChatService;
+import com.stocks.tracker.service.SpeculationService;
 import com.stocks.tracker.service.StockLookupException;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -22,10 +24,22 @@ public class PortfolioController {
     private final LlmService llmService;
     private final AnalysisJobService analysisJobService;
     private final com.stocks.tracker.repository.SavedAnalysisRepository savedAnalysisRepository;
+    private final SpeculationService speculationService;
+    private final SpeculationChatService speculationChatService;
+    private final com.stocks.tracker.service.ExternalRatingService ratingService;
+    private final com.stocks.tracker.service.MarketBriefService briefService;
 
     public PortfolioController(PortfolioService portfolioService, TradingAccountRepository accountRepository,
                                LlmService llmService, AnalysisJobService analysisJobService,
-                               com.stocks.tracker.repository.SavedAnalysisRepository savedAnalysisRepository) {
+                               com.stocks.tracker.repository.SavedAnalysisRepository savedAnalysisRepository,
+                               SpeculationService speculationService,
+                               SpeculationChatService speculationChatService,
+                               com.stocks.tracker.service.ExternalRatingService ratingService,
+                               com.stocks.tracker.service.MarketBriefService briefService) {
+        this.briefService = briefService;
+        this.ratingService = ratingService;
+        this.speculationChatService = speculationChatService;
+        this.speculationService = speculationService;
         this.savedAnalysisRepository = savedAnalysisRepository;
         this.analysisJobService = analysisJobService;
         this.portfolioService = portfolioService;
@@ -38,6 +52,7 @@ public class PortfolioController {
         model.addAttribute("portfolio", portfolioService.buildPortfolioView());
         model.addAttribute("accounts", accountRepository.findAll());
         model.addAttribute("markets", Market.values());
+        model.addAttribute("speculation", speculationService.listRows());
         model.addAttribute("currencies", com.stocks.tracker.model.Currencies.SUPPORTED);
         return "index";
     }
@@ -134,8 +149,112 @@ public class PortfolioController {
         }
     }
 
+    // ---- Speculation list ----
+
+    @PostMapping("/speculation")
+    public String addSpeculation(@RequestParam String symbol,
+                                 @RequestParam Market market,
+                                 @RequestParam(required = false) String note,
+                                 RedirectAttributes redirectAttributes) {
+        try {
+            var entry = speculationService.add(symbol, market, note, com.stocks.tracker.model.SpeculationEntry.Source.USER);
+            redirectAttributes.addFlashAttribute("success", "Added " + entry.getStock().getSymbol() + " to Speculation.");
+        } catch (Exception e) {
+            redirectAttributes.addFlashAttribute("error", e.getMessage());
+        }
+        return "redirect:/";
+    }
+
+    @PostMapping("/speculation/{id}/delete")
+    public String deleteSpeculation(@PathVariable Long id, RedirectAttributes redirectAttributes) {
+        try {
+            speculationService.delete(id);
+            redirectAttributes.addFlashAttribute("success", "Removed from Speculation.");
+        } catch (Exception e) {
+            redirectAttributes.addFlashAttribute("error", e.getMessage());
+        }
+        return "redirect:/";
+    }
+
+    /**
+     * Starts a background answer to the latest question in a conversation about the speculation stocks.
+     * Poll and cancel it through the /api/ai/analyze/{id} endpoints.
+     */
+    @PostMapping("/api/speculation/chat")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<?> speculationChat(
+            @RequestBody java.util.List<java.util.Map<String, String>> messages) {
+        java.util.List<LlmService.Message> conversation = new java.util.ArrayList<>();
+        for (var m : messages) {
+            String role = m.get("role");
+            String content = m.get("content") == null ? "" : m.get("content").strip();
+            if (!"user".equals(role) && !"assistant".equals(role) || content.isEmpty()) {
+                return org.springframework.http.ResponseEntity.badRequest().body("Invalid conversation.");
+            }
+            conversation.add(new LlmService.Message(role, content.length() > 6000 ? content.substring(0, 6000) : content));
+        }
+        if (conversation.isEmpty() || !"user".equals(conversation.get(conversation.size() - 1).role())) {
+            return org.springframework.http.ResponseEntity.badRequest().body("Ask a question first.");
+        }
+        // Keep the prompt bounded: only the most recent turns are sent.
+        if (conversation.size() > 12) {
+            conversation = new java.util.ArrayList<>(conversation.subList(conversation.size() - 12, conversation.size()));
+            while (!conversation.isEmpty() && !"user".equals(conversation.get(0).role())) {
+                conversation.remove(0);
+            }
+        }
+        final var turns = conversation;
+        var job = analysisJobService.startExclusive("speculation-chat", phase -> speculationChatService.ask(turns, phase));
+        if (job == null) {
+            return org.springframework.http.ResponseEntity.status(409).body("A reply is still being generated.");
+        }
+        return org.springframework.http.ResponseEntity.accepted().body(java.util.Map.of("id", job.getId()));
+    }
+
+    /** Analyst consensus, recent analyst actions and news for a speculation stock, from external sources. */
+    @GetMapping("/api/speculation/{id}/rating")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<?> speculationRating(@PathVariable Long id) {
+        com.stocks.tracker.dto.SpeculationRow row;
+        try {
+            row = speculationService.findRow(id);
+        } catch (IllegalArgumentException e) {
+            return org.springframework.http.ResponseEntity.status(404).body(e.getMessage());
+        }
+        java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("symbol", row.symbol());
+        body.put("market", row.market().getLabel());
+        body.put("companyName", row.companyName());
+        body.put("currencySymbol", row.currencySymbol());
+        body.put("currentPrice", row.currentPrice());
+        body.put("addedPrice", row.addedPrice());
+        body.put("ai", row.isAi());
+        body.put("note", row.note());
+        body.put("rating", ratingService.lookup(row.symbol(), row.market()));
+        return org.springframework.http.ResponseEntity.ok(body);
+    }
+
+    @GetMapping("/api/speculation/{id}/history")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<?> speculationHistory(@PathVariable Long id,
+                                                                         @RequestParam(defaultValue = "3mo") String range) {
+        if (!com.stocks.tracker.service.MarketDataService.HISTORY_RANGES.contains(range)) {
+            return org.springframework.http.ResponseEntity.badRequest().body("Unsupported range.");
+        }
+        try {
+            return org.springframework.http.ResponseEntity.ok(speculationService.history(id, range));
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.status(404).body(e.getMessage());
+        }
+    }
+
     @PostMapping("/prices/refresh")
     public String refreshPrices(RedirectAttributes redirectAttributes) {
+        var running = analysisJobService.latest(AnalysisJobService.KIND_ANALYSIS);
+        if (running != null && running.getState() == AnalysisJobService.State.RUNNING) {
+            redirectAttributes.addFlashAttribute("error", "An analysis is running and refreshes prices itself; try again when it finishes.");
+            return "redirect:/";
+        }
         int updated = portfolioService.refreshAllPrices();
         redirectAttributes.addFlashAttribute("success", "Refreshed market prices for " + updated + " stock(s).");
         return "redirect:/";
@@ -193,16 +312,50 @@ public class PortfolioController {
 
     @PostMapping("/api/ai/analyze")
     @ResponseBody
-    public org.springframework.http.ResponseEntity<?> analyzePortfolio() {
-        String summary = portfolioService.buildPortfolioSummary();
-        if (summary == null) {
-            return org.springframework.http.ResponseEntity.badRequest().body("Add some holdings before analyzing.");
+    public org.springframework.http.ResponseEntity<?> analyzePortfolio(@RequestParam(defaultValue = "false") boolean rejoinOnly) {
+        if (rejoinOnly) {
+            // Used after a page reload: reattach to a running analysis, but never start a new one.
+            var running = analysisJobService.latest(AnalysisJobService.KIND_ANALYSIS);
+            return running != null && running.getState() == AnalysisJobService.State.RUNNING
+                    ? org.springframework.http.ResponseEntity.accepted().body(java.util.Map.of("id", running.getId()))
+                    : org.springframework.http.ResponseEntity.status(409).body("No analysis is running.");
         }
-        String request = "Analyze the following investment portfolio. Cover diversification and concentration risk, "
+        if (!portfolioService.hasData()) {
+            return org.springframework.http.ResponseEntity.badRequest().body("Add some holdings or speculation stocks before analyzing.");
+        }
+        String instructions = "Today is " + java.time.LocalDate.now() + ". You have no tools or internet access for this request: "
+                + "everything you need is provided below, so do not say you will fetch or look anything up. Write the complete analysis now.\n\n"
+                + "Analyze the following investment portfolio. Cover diversification and concentration risk, "
                 + "exposure by market and currency, notable gains and losses versus cost, and any suggestions worth "
-                + "considering. Be specific and refer to holdings by symbol. Prices are the last refreshed prices.\n\n"
-                + summary;
-        var job = analysisJobService.start(AnalysisJobService.KIND_ANALYSIS, request);
+                + "considering. Be specific and refer to holdings by symbol. Prices and market data were refreshed just now. "
+                + "Base your analysis on the market snapshot, analyst views, new idea candidates and headlines provided after the "
+                + "portfolio; if a note says some data was omitted, treat that data as incomplete.\n\n"
+                + "If a Speculation watchlist is included, those are stocks the user is considering buying but does not own. "
+                + "For each one, say whether it looks worth buying now, worth waiting on, or worth dropping, using how it has "
+                + "moved since it was added. Also judge how earlier AI-added picks are doing.\n\n"
+                + "If you have new stocks worth adding to the Speculation watchlist, end your reply with exactly one block in "
+                + "this format and write nothing after it (omit the block if you have no ideas):\n"
+                + "```speculation\n"
+                + "[{\"symbol\": \"TICKER\", \"market\": \"US\", \"reason\": \"one sentence\"}]\n"
+                + "```\n"
+                + "Use at most " + SpeculationService.MAX_AI_PICKS + " picks. market must be one of US, CANADA_TSX, CANADA_TSXV, "
+                + "INDIA_NSE, INDIA_BSE, and symbol is the bare ticker without an exchange suffix. Only suggest real, listed "
+                + "tickers you are confident exist; each ticker is verified against live market data.\n\n";
+        // Refresh everything first so the analysis works from current data, then build the prompt to fit the model's context.
+        var job = analysisJobService.start(AnalysisJobService.KIND_ANALYSIS, phase -> {
+            phase.accept("Refreshing market prices and exchange rates");
+            portfolioService.refreshAllPrices();
+            ratingService.invalidate();
+            phase.accept("Preparing your portfolio data");
+            String summary = portfolioService.buildPortfolioSummary();
+            if (summary == null) {
+                throw new IllegalStateException("Nothing to analyze: add holdings or speculation stocks first.");
+            }
+            String head = instructions + summary;
+            phase.accept("Gathering analyst ratings, news and market data");
+            String market = briefService.buildBrief(com.stocks.tracker.service.TokenEstimator.estimate(head), true);
+            return market.isEmpty() ? head : head + "\n\n" + market;
+        });
         return org.springframework.http.ResponseEntity.accepted().body(java.util.Map.of("id", job.getId()));
     }
 
@@ -252,6 +405,25 @@ public class PortfolioController {
                 : org.springframework.http.ResponseEntity.status(409).body("Nothing to cancel: the analysis has already finished.");
     }
 
+    /** Progress of the most recent portfolio analysis, so the page can show it after the popup is closed. */
+    @GetMapping("/api/ai/analyze/latest")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<?> latestAnalysis() {
+        var job = analysisJobService.latest(AnalysisJobService.KIND_ANALYSIS);
+        if (job == null) {
+            return org.springframework.http.ResponseEntity.noContent().build();
+        }
+        java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("id", job.getId());
+        body.put("state", job.getState().name());
+        body.put("phase", job.getPhase());
+        body.put("elapsedMs", job.getElapsedMs());
+        if (job.getError() != null) {
+            body.put("error", job.getError());
+        }
+        return org.springframework.http.ResponseEntity.ok(body);
+    }
+
     @GetMapping("/api/ai/analyze/{id}")
     @ResponseBody
     public org.springframework.http.ResponseEntity<?> analysisStatus(@PathVariable String id) {
@@ -262,6 +434,7 @@ public class PortfolioController {
         java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("state", job.getState().name());
         body.put("elapsedMs", job.getElapsedMs());
+        body.put("phase", job.getPhase());
         if (job.getResult() != null) {
             body.put("model", job.getResult().model());
             body.put("response", job.getResult().response());

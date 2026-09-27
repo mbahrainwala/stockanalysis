@@ -26,3 +26,12 @@ server:
       # Cookie-only sessions: URL rewriting appends ;jsessionid=... to redirects,
       # which misses the "/" mapping and renders index without a model.
       tracking-modes: cookie
+
+ai:
+  context:
+    # Size of the model's context window, in tokens. Prompts are built to fit inside it.
+    window-tokens: 200000
+    # Tokens kept free for the model's reply.
+    output-reserve-tokens: 16000
+    # Upper limit for the market data added to an analysis, so local models aren't fed a huge prompt.
+    brief-max-tokens: 60000

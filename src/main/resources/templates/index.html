@@ -11,10 +11,11 @@
         <h1>Stock Tracker</h1>
         <nav class="tabs" role="tablist">
             <button type="button" class="tab active" role="tab" data-tab="portfolio">Portfolio</button>
+            <button type="button" class="tab" role="tab" data-tab="speculation">Speculation</button>
             <button type="button" class="tab" role="tab" data-tab="accounts">Accounts</button>
             <button type="button" class="tab" role="tab" data-tab="ai">AI Setup</button>
         </nav>
-        <form th:action="@{/prices/refresh}" method="post">
+        <form th:action="@{/prices/refresh}" method="post" id="refresh-prices-form">
             <button type="submit" class="btn btn-primary">Refresh Market Prices</button>
         </form>
     </header>
@@ -27,10 +28,11 @@
         <div class="card-title-row">
             <h2>Portfolio</h2>
             <div class="title-actions">
-            <button type="button" id="analyze-btn" class="btn btn-secondary" th:disabled="${portfolio.rows().isEmpty()}"
+            <button type="button" id="analysis-status" class="analysis-status" hidden></button>
+            <button type="button" id="analyze-btn" class="btn btn-secondary" th:disabled="${portfolio.rows().isEmpty() and speculation.isEmpty()}"
                     title="Analyze this portfolio with your configured AI model">Analyze</button>
             <button type="button" id="history-btn" class="btn btn-secondary"
-                    title="Browse previously saved analyses">History</button>
+                    title="Browse previously saved analyses">History<span id="history-dot" class="history-dot" hidden></span></button>
             <button type="button" id="add-shares-open" class="btn btn-secondary" th:disabled="${accounts.isEmpty()}"
                     title="Add shares with lookup and company-name search">Add Shares&hellip;</button>
             <button type="button" id="quick-add-toggle" class="btn btn-primary btn-plus" title="Quick add a stock" aria-expanded="false"
@@ -125,6 +127,92 @@
         <p th:if="${!portfolio.rows().isEmpty()}" class="muted small-note">Price and Total are in each stock's own currency; per-account values and average costs are in that account's currency. Gain / Loss is converted to USD at the current exchange rate.</p>
     </section>
 
+    </div>
+
+    <div class="tab-panel" id="tab-speculation" hidden>
+    <section class="card">
+        <h2>Speculation</h2>
+        <p class="muted small-note">Stocks you are considering buying but don't own. Each is tracked from the day it was added, so you can watch the trend before deciding. The AI can add picks here during an analysis; those are tagged <span class="badge badge-ai">AI</span> so you can see how its recommendations perform.</p>
+        <form th:action="@{/speculation}" method="post" class="quick-add spec-add">
+            <select name="market" required title="Exchange">
+                <option th:each="m : ${markets}" th:value="${m.name()}" th:text="${m.label}"></option>
+            </select>
+            <input type="text" name="symbol" required placeholder="Symbol, e.g. NVDA" autocomplete="off">
+            <input type="text" name="note" maxlength="1000" placeholder="Why? (optional)" autocomplete="off" class="spec-note-input">
+            <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+        <p th:if="${speculation.isEmpty()}" class="muted">Nothing on the list yet.</p>
+        <div class="range-picker" th:if="${!speculation.isEmpty()}" role="group" aria-label="Trend range">
+            <span class="muted small-note">Trend range:</span>
+            <button type="button" class="range-btn active" data-range="3mo">3M</button>
+            <button type="button" class="range-btn" data-range="6mo">6M</button>
+            <button type="button" class="range-btn" data-range="1y">1Y</button>
+            <button type="button" class="range-btn" data-range="5y">5Y</button>
+        </div>
+        <div class="table-scroll" th:if="${!speculation.isEmpty()}">
+            <table class="portfolio-table spec-table">
+                <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Company</th>
+                    <th>Added</th>
+                    <th class="num">Price when added</th>
+                    <th class="num">Current price</th>
+                    <th class="num">Change</th>
+                    <th>Trend <span id="spark-range-label">(3M)</span></th>
+                    <th>Note</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="r : ${speculation}">
+                    <td class="symbol">
+                        <span th:text="${r.symbol}"></span>
+                        <span class="market-badge" th:text="${r.market.label}"></span>
+                        <span class="badge badge-ai" th:if="${r.ai}" title="Added by the AI">AI</span>
+                        <button type="button" class="info-btn" th:data-id="${r.id}" th:data-symbol="${r.symbol}"
+                                title="Analyst rating and news" aria-label="Analyst rating and news">&#9432;</button>
+                    </td>
+                    <td th:text="${r.companyName}"></td>
+                    <td>
+                        <span th:text="${#temporals.format(r.addedAt, 'yyyy-MM-dd')}"></span>
+                        <br/><small class="muted" th:text="${r.daysHeld + (r.daysHeld == 1 ? ' day ago' : ' days ago')}"></small>
+                    </td>
+                    <td class="num" th:text="${r.currencySymbol + #numbers.formatDecimal(r.addedPrice, 1, 'COMMA', 2, 'POINT')}"></td>
+                    <td class="num" th:text="${r.currentPrice != null ? r.currencySymbol + #numbers.formatDecimal(r.currentPrice, 1, 'COMMA', 2, 'POINT') : '-'}"></td>
+                    <td class="num">
+                        <strong th:if="${r.changePercent != null}" th:class="${r.changePercent.signum() >= 0 ? 'gain' : 'loss'}"
+                                th:text="${(r.changePercent.signum() > 0 ? '+' : '') + r.changePercent + '%'}"></strong>
+                        <span th:if="${r.changePercent == null}">-</span>
+                    </td>
+                    <td><span class="spark" th:data-id="${r.id}" th:data-added="${#temporals.format(r.addedAt, 'yyyy-MM-dd')}"></span></td>
+                    <td class="spec-note" th:text="${r.note}"></td>
+                    <td class="spec-actions">
+                        <form th:action="@{/speculation/{id}/delete(id=${r.id})}" method="post"
+                              th:data-name="${r.symbol}"
+                              onsubmit="return confirm('Remove ' + this.dataset.name + ' from Speculation?')">
+                            <button type="submit" class="btn btn-danger">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="muted small-note">Prices update when you press Refresh Market Prices. The trend chart shows closing prices (weekly for 5Y) with the day it was added marked when it falls in the range.</p>
+    </section>
+    <section class="card spec-chat">
+        <h2>Ask about your stocks</h2>
+        <p class="muted small-note">Chat with your configured AI model about the stocks on this list. It sees your holdings, the watchlist, and recent price trends. Answers are AI-generated and not financial advice.</p>
+        <div id="spec-chat-log" class="chat-log" aria-live="polite"></div>
+        <form id="spec-chat-form" class="chat-form">
+            <textarea id="spec-chat-input" rows="2" required placeholder="e.g. Is NVDA a buy now, or should I wait a week?"></textarea>
+            <div class="chat-actions">
+                <button type="submit" id="spec-chat-send" class="btn btn-primary">Send</button>
+                <button type="button" id="spec-chat-cancel" class="btn btn-danger" hidden>Cancel</button>
+                <button type="button" id="spec-chat-clear" class="btn btn-secondary">Clear chat</button>
+            </div>
+        </form>
+    </section>
     </div>
 
     <div class="tab-panel" id="tab-accounts" hidden>
@@ -281,6 +369,15 @@
             </div>
         </div>
     </div>
+</dialog>
+
+<dialog id="rating-dialog" class="modal modal-wide">
+    <div class="modal-head">
+        <h2 id="rating-title">Analyst Rating</h2>
+        <button type="button" class="modal-close" id="rating-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="rating-body" class="rating-body"></div>
+    <p class="muted small-note">Analyst consensus, actions and news come from Yahoo Finance and are provided for information only. Not financial advice.</p>
 </dialog>
 
 <dialog id="add-shares-dialog" class="modal">

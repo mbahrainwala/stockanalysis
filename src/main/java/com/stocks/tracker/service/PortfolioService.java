@@ -34,17 +34,20 @@ public class PortfolioService {
     private final HoldingRepository holdingRepository;
     private final MarketDataService marketDataService;
     private final ExchangeRateService exchangeRates;
+    private final SpeculationService speculation;
 
     public PortfolioService(TradingAccountRepository accountRepository,
                              StockRepository stockRepository,
                              HoldingRepository holdingRepository,
                              MarketDataService marketDataService,
-                             ExchangeRateService exchangeRates) {
+                             ExchangeRateService exchangeRates,
+                             SpeculationService speculation) {
         this.accountRepository = accountRepository;
         this.stockRepository = stockRepository;
         this.holdingRepository = holdingRepository;
         this.marketDataService = marketDataService;
         this.exchangeRates = exchangeRates;
+        this.speculation = speculation;
     }
 
     private static String currencyOf(Stock stock) {
@@ -160,10 +163,17 @@ public class PortfolioService {
      * Returns null when there are no holdings. Amounts are in each account's currency, with
      * gain/loss also converted to USD.
      */
+    /** True when there is anything to analyze: holdings or speculation stocks. */
+    @Transactional(readOnly = true)
+    public boolean hasData() {
+        return holdingRepository.count() > 0 || !speculation.isEmpty();
+    }
+
     @Transactional(readOnly = true)
     public String buildPortfolioSummary() {
         List<Holding> holdings = holdingRepository.findAll();
-        if (holdings.isEmpty()) {
+        String speculationSection = speculation.buildSummarySection();
+        if (holdings.isEmpty() && speculationSection == null) {
             return null;
         }
         Map<String, List<Holding>> byAccount = new TreeMap<>();
@@ -232,6 +242,9 @@ public class PortfolioService {
             sb.append("\nExchange rates used:\n");
             ratesUsed.forEach((pair, rate) -> sb.append("- 1 ").append(pair.replace("->", " = "))
                     .append(' ').append(rate.setScale(4, RoundingMode.HALF_UP).toPlainString()).append('\n'));
+        }
+        if (speculationSection != null) {
+            sb.append('\n').append(speculationSection);
         }
         return sb.toString();
     }
