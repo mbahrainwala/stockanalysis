@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 public interface SavedAnalysisRepository extends JpaRepository<SavedAnalysis, Long> {
 
@@ -19,5 +20,9 @@ public interface SavedAnalysisRepository extends JpaRepository<SavedAnalysis, Lo
         long getDurationMs();
     }
 
-    List<Summary> findAllByOrderByCreatedAtDesc();
+    List<Summary> findAllByOwnerIdOrderByCreatedAtDesc(Long ownerId);
+
+    Optional<SavedAnalysis> findByIdAndOwnerId(Long id, Long ownerId);
+
+    boolean existsByIdAndOwnerId(Long id, Long ownerId);
 }

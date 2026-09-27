@@ -1,3 +1,16 @@
+/** Attaches the CSRF header Spring Security expects for state-changing requests. */
+function csrfFetch(url, options) {
+    options = options || {};
+    const method = (options.method || "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
+        const match = document.cookie.match(/(?:^|; )XSRF-TOKEN=([^;]+)/);
+        if (match) {
+            options.headers = Object.assign({}, options.headers, {"X-XSRF-TOKEN": decodeURIComponent(match[1])});
+        }
+    }
+    return fetch(url, options);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     const lookupBtn = document.getElementById("lookup-btn");
     const symbolInput = document.getElementById("symbol-input");
@@ -100,7 +113,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 stockId: input.dataset.stockId,
                 [CELLS[type].field]: value
             });
-            const response = await fetch(CELLS[type].url, {method: "POST", body});
+            const response = await csrfFetch(CELLS[type].url, {method: "POST", body});
             if (!response.ok) {
                 input.classList.add("cell-error");
                 input.title = await response.text();
@@ -407,7 +420,7 @@ document.addEventListener("DOMContentLoaded", () => {
     form.addEventListener("submit", async e => {
         e.preventDefault();
         const body = new URLSearchParams({endpoint: endpointEl.value.trim(), provider: getProvider(), model: modelEl.value});
-        const r = await fetch("/api/ai/config", {method: "POST", body});
+        const r = await csrfFetch("/api/ai/config", {method: "POST", body});
         if (!r.ok) {
             setStatus(await r.text(), "bad");
             return;
@@ -426,7 +439,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         cancelChatBtn.disabled = true;
-        const r = await fetch(`/api/ai/analyze/${chatJobId}/cancel`, {method: "POST"});
+        const r = await csrfFetch(`/api/ai/analyze/${chatJobId}/cancel`, {method: "POST"});
         if (!r.ok && r.status !== 409) {
             cancelChatBtn.disabled = false;
         }
@@ -444,7 +457,7 @@ document.addEventListener("DOMContentLoaded", () => {
         responseEl.textContent = "Starting...";
         sendBtn.disabled = true;
         try {
-            const start = await fetch("/api/ai/chat", {
+            const start = await csrfFetch("/api/ai/chat", {
                 method: "POST",
                 body: new URLSearchParams({prompt: document.getElementById("ai-prompt").value})
             });
@@ -490,7 +503,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const promptStatus = document.getElementById("ai-prompt-status");
     document.getElementById("ai-prompt-form").addEventListener("submit", async e => {
         e.preventDefault();
-        const r = await fetch("/api/ai/prompt", {
+        const r = await csrfFetch("/api/ai/prompt", {
             method: "POST",
             body: new URLSearchParams({customPrompt: customEl.value})
         });
@@ -544,7 +557,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         cancelBtn.disabled = true;
-        const r = await fetch(`/api/ai/analyze/${currentJobId}/cancel`, {method: "POST"});
+        const r = await csrfFetch(`/api/ai/analyze/${currentJobId}/cancel`, {method: "POST"});
         // The polling loop picks up the CANCELLED state; a 409 means it had just finished.
         if (!r.ok && r.status !== 409) {
             cancelBtn.disabled = false;
@@ -565,7 +578,7 @@ document.addEventListener("DOMContentLoaded", () => {
         try { sessionStorage.setItem("analysisPopupOpen", "1"); } catch (e) { /* ignore */ }
         btn.hidden = true;
         try {
-            const start = await fetch("/api/ai/analyze" + (rejoinOnly ? "?rejoinOnly=true" : ""), {method: "POST"});
+            const start = await csrfFetch("/api/ai/analyze" + (rejoinOnly ? "?rejoinOnly=true" : ""), {method: "POST"});
             if (!start.ok) {
                 if (rejoinOnly) {
                     dialog.close(); // it finished in the meantime; the status pill / History show the result
@@ -696,7 +709,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (selectedId === null || !confirm("Delete this saved analysis? This cannot be undone.")) {
             return;
         }
-        const r = await fetch(`/api/ai/analyses/${selectedId}/delete`, {method: "POST"});
+        const r = await csrfFetch(`/api/ai/analyses/${selectedId}/delete`, {method: "POST"});
         if (r.ok || r.status === 404) {
             clearDetail();
             load(true);
@@ -865,7 +878,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         cancelBtn.disabled = true;
-        const r = await fetch(`/api/ai/analyze/${jobId}/cancel`, {method: "POST"});
+        const r = await csrfFetch(`/api/ai/analyze/${jobId}/cancel`, {method: "POST"});
         if (!r.ok && r.status !== 409) {
             cancelBtn.disabled = false;
         }
@@ -891,7 +904,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const wait = status("Starting...");
         let answered = false;
         try {
-            const start = await fetch("/api/speculation/chat", {
+            const start = await csrfFetch("/api/speculation/chat", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify(conversation)

@@ -8,9 +8,11 @@ import com.stocks.tracker.model.Holding;
 import com.stocks.tracker.model.Market;
 import com.stocks.tracker.model.Stock;
 import com.stocks.tracker.model.TradingAccount;
+import com.stocks.tracker.model.User;
 import com.stocks.tracker.repository.HoldingRepository;
 import com.stocks.tracker.repository.StockRepository;
 import com.stocks.tracker.repository.TradingAccountRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -35,19 +37,22 @@ public class PortfolioService {
     private final MarketDataService marketDataService;
     private final ExchangeRateService exchangeRates;
     private final SpeculationService speculation;
+    private final CurrentUserService currentUser;
 
     public PortfolioService(TradingAccountRepository accountRepository,
                              StockRepository stockRepository,
                              HoldingRepository holdingRepository,
                              MarketDataService marketDataService,
                              ExchangeRateService exchangeRates,
-                             SpeculationService speculation) {
+                             SpeculationService speculation,
+                             CurrentUserService currentUser) {
         this.accountRepository = accountRepository;
         this.stockRepository = stockRepository;
         this.holdingRepository = holdingRepository;
         this.marketDataService = marketDataService;
         this.exchangeRates = exchangeRates;
         this.speculation = speculation;
+        this.currentUser = currentUser;
     }
 
     private static String currencyOf(Stock stock) {
@@ -106,8 +111,9 @@ public class PortfolioService {
 
     @Transactional(readOnly = true)
     public PortfolioView buildPortfolioView() {
-        List<TradingAccount> accounts = accountRepository.findAll();
-        List<Holding> holdings = holdingRepository.findAll();
+        Long ownerId = currentUser.currentUserId();
+        List<TradingAccount> accounts = accountRepository.findAllByOwnerId(ownerId);
+        List<Holding> holdings = holdingRepository.findAllByTradingAccount_Owner_Id(ownerId);
 
         Map<Long, PortfolioRow> rowsByStockId = new LinkedHashMap<>();
         for (Holding holding : holdings) {
@@ -145,7 +151,13 @@ public class PortfolioService {
 
     @Transactional
     public TradingAccount createAccount(String name, String broker, String currency) {
-        TradingAccount account = new TradingAccount(name.trim(), broker == null ? null : broker.trim());
+        User owner = currentUser.currentUser();
+        String newName = name == null ? "" : name.trim();
+        accountRepository.findByOwnerIdAndNameIgnoreCase(owner.getId(), newName).ifPresent(existing -> {
+            throw new IllegalArgumentException("An account named \"" + newName + "\" already exists.");
+        });
+        TradingAccount account = new TradingAccount(newName, broker == null ? null : broker.trim());
+        account.setOwner(owner);
         account.setCurrency(Currencies.normalize(currency));
         return accountRepository.save(account);
     }
@@ -166,12 +178,13 @@ public class PortfolioService {
     /** True when there is anything to analyze: holdings or speculation stocks. */
     @Transactional(readOnly = true)
     public boolean hasData() {
-        return holdingRepository.count() > 0 || !speculation.isEmpty();
+        Long ownerId = currentUser.currentUserId();
+        return !holdingRepository.findAllByTradingAccount_Owner_Id(ownerId).isEmpty() || !speculation.isEmpty();
     }
 
     @Transactional(readOnly = true)
     public String buildPortfolioSummary() {
-        List<Holding> holdings = holdingRepository.findAll();
+        List<Holding> holdings = holdingRepository.findAllByTradingAccount_Owner_Id(currentUser.currentUserId());
         String speculationSection = speculation.buildSummarySection();
         if (holdings.isEmpty() && speculationSection == null) {
             return null;
@@ -249,15 +262,23 @@ public class PortfolioService {
         return sb.toString();
     }
 
-    @Transactional
-    public TradingAccount updateAccount(Long accountId, String name, String broker, String currency) {
+    private TradingAccount ownedAccount(Long accountId) {
         TradingAccount account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new IllegalArgumentException("Account not found."));
+        if (account.getOwner() == null || !account.getOwner().getId().equals(currentUser.currentUserId())) {
+            throw new IllegalArgumentException("Account not found.");
+        }
+        return account;
+    }
+
+    @Transactional
+    public TradingAccount updateAccount(Long accountId, String name, String broker, String currency) {
+        TradingAccount account = ownedAccount(accountId);
         String newName = name == null ? "" : name.trim();
         if (newName.isEmpty()) {
             throw new IllegalArgumentException("Account name cannot be empty.");
         }
-        accountRepository.findByNameIgnoreCase(newName).ifPresent(existing -> {
+        accountRepository.findByOwnerIdAndNameIgnoreCase(currentUser.currentUserId(), newName).ifPresent(existing -> {
             if (!existing.getId().equals(accountId)) {
                 throw new IllegalArgumentException("An account named \"" + newName + "\" already exists.");
             }
@@ -271,8 +292,7 @@ public class PortfolioService {
     /** Deletes the account; its holdings are removed via cascade. */
     @Transactional
     public String deleteAccount(Long accountId) {
-        TradingAccount account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new IllegalArgumentException("Account not found."));
+        TradingAccount account = ownedAccount(accountId);
         accountRepository.delete(account);
         return account.getName();
     }
@@ -300,8 +320,7 @@ public class PortfolioService {
             throw new IllegalArgumentException("Market must be specified");
         }
 
-        TradingAccount account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown trading account: " + accountId));
+        TradingAccount account = ownedAccount(accountId);
 
         String symbol = symbolInput.trim().toUpperCase();
         Stock stock = stockRepository.findBySymbolIgnoreCaseAndMarket(symbol, market).orElseGet(() -> {
@@ -340,8 +359,7 @@ public class PortfolioService {
         if (shares == null || shares.signum() < 0) {
             throw new IllegalArgumentException("Shares cannot be negative");
         }
-        TradingAccount account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown trading account: " + accountId));
+        TradingAccount account = ownedAccount(accountId);
         Stock stock = stockRepository.findById(stockId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown stock: " + stockId));
         var existing = holdingRepository.findByTradingAccountIdAndStockId(accountId, stockId);
@@ -361,6 +379,7 @@ public class PortfolioService {
         if (averageCost != null && averageCost.signum() < 0) {
             throw new IllegalArgumentException("Average cost cannot be negative");
         }
+        ownedAccount(accountId);
         Holding holding = holdingRepository.findByTradingAccountIdAndStockId(accountId, stockId)
                 .orElseThrow(() -> new IllegalArgumentException("Add shares to this account before setting an average cost."));
         holding.setAverageCost(averageCost == null ? null : averageCost.setScale(4, RoundingMode.HALF_UP));

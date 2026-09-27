@@ -2,22 +2,30 @@
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
     <meta charset="UTF-8">
-    <title>Stock Tracker</title>
+    <title th:text="${companyName}">Stock Tracker</title>
     <link rel="stylesheet" th:href="@{/css/style.css}">
 </head>
 <body>
 <div class="page">
     <header class="page-header">
-        <h1>Stock Tracker</h1>
+        <h1 th:text="${companyName}">Stock Tracker</h1>
         <nav class="tabs" role="tablist">
             <button type="button" class="tab active" role="tab" data-tab="portfolio">Portfolio</button>
             <button type="button" class="tab" role="tab" data-tab="speculation">Speculation</button>
             <button type="button" class="tab" role="tab" data-tab="accounts">Accounts</button>
-            <button type="button" class="tab" role="tab" data-tab="ai">AI Setup</button>
+            <button type="button" class="tab" role="tab" data-tab="ai" th:if="${isAdmin}">AI Setup</button>
+            <button type="button" class="tab" role="tab" data-tab="admin" th:if="${isAdmin}">Admin</button>
         </nav>
-        <form th:action="@{/prices/refresh}" method="post" id="refresh-prices-form">
-            <button type="submit" class="btn btn-primary">Refresh Market Prices</button>
-        </form>
+        <div class="header-actions">
+            <a th:href="@{/portfolio/export.csv}" class="btn btn-secondary" download>Download CSV</a>
+            <form th:action="@{/prices/refresh}" method="post" id="refresh-prices-form">
+                <button type="submit" class="btn btn-primary">Refresh Market Prices</button>
+            </form>
+            <span class="muted small-note" th:text="'Signed in as ' + ${username}"></span>
+            <form th:action="@{/logout}" method="post">
+                <button type="submit" class="btn btn-secondary">Log Out</button>
+            </form>
+        </div>
     </header>
 
     <div class="alert alert-success" th:if="${success}" th:text="${success}"></div>
@@ -281,7 +289,7 @@
     </section>
     </div>
 
-    <div class="tab-panel" id="tab-ai" hidden>
+    <div class="tab-panel" id="tab-ai" hidden th:if="${isAdmin}">
         <div class="ai-layout">
             <section class="card">
                 <h2>AI Provider</h2>
@@ -335,6 +343,80 @@
                 <div id="ai-response" class="ai-response" hidden></div>
             </section>
         </div>
+    </div>
+
+    <div class="tab-panel" id="tab-admin" hidden th:if="${isAdmin}">
+        <div class="accounts-grid">
+        <section class="card">
+            <h2>Branding</h2>
+            <p class="muted small-note">Shown in the header and on the login page.</p>
+            <form th:action="@{/admin/branding}" method="post" class="form-grid">
+                <label>
+                    Company Name
+                    <input type="text" name="companyName" maxlength="100" th:value="${companyName}" placeholder="e.g. Acme Stock Manager">
+                </label>
+                <button type="submit" class="btn btn-secondary">Save</button>
+            </form>
+        </section>
+        <section class="card">
+            <h2>Create User</h2>
+            <form th:action="@{/admin/users}" method="post" class="form-grid">
+                <label>
+                    Username
+                    <input type="text" name="username" required autocomplete="off">
+                </label>
+                <label>
+                    Temporary Password
+                    <input type="text" name="password" required autocomplete="off">
+                </label>
+                <label>
+                    Role
+                    <select name="role">
+                        <option value="USER">User</option>
+                        <option value="ADMIN">Admin</option>
+                    </select>
+                </label>
+                <button type="submit" class="btn btn-primary">Create User</button>
+            </form>
+        </section>
+        </div>
+        <section class="card">
+            <h2>Manage Users</h2>
+            <div class="table-scroll">
+                <table class="portfolio-table manage-table">
+                    <thead>
+                    <tr><th>Username</th><th>Role</th><th>Status</th><th>Reset Password</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                    <tr th:each="u : ${users}">
+                        <td th:text="${u.username}"></td>
+                        <td>
+                            <form th:id="'role-' + ${u.id}" th:action="@{/admin/users/{id}/role(id=${u.id})}" method="post" class="inline-form">
+                                <select name="role" onchange="this.form.requestSubmit()">
+                                    <option value="USER" th:selected="${u.role.name() == 'USER'}">User</option>
+                                    <option value="ADMIN" th:selected="${u.role.name() == 'ADMIN'}">Admin</option>
+                                </select>
+                            </form>
+                        </td>
+                        <td th:text="${u.enabled} ? 'Enabled' : 'Disabled'"></td>
+                        <td>
+                            <form th:action="@{/admin/users/{id}/password(id=${u.id})}" method="post" class="inline-form spec-add">
+                                <input type="text" name="password" placeholder="new password" autocomplete="off" required>
+                                <button type="submit" class="btn btn-tiny">Reset</button>
+                            </form>
+                        </td>
+                        <td class="manage-actions">
+                            <form th:action="@{/admin/users/{id}/enabled(id=${u.id})}" method="post">
+                                <input type="hidden" name="enabled" th:value="${!u.enabled}">
+                                <button type="submit" th:class="${u.enabled} ? 'btn btn-danger' : 'btn btn-secondary'"
+                                        th:text="${u.enabled} ? 'Disable' : 'Enable'"></button>
+                            </form>
+                        </td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
     </div>
 </div>
 

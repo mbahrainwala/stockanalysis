@@ -27,6 +27,13 @@ server:
       # which misses the "/" mapping and renders index without a model.
       tracking-modes: cookie
 
+app:
+  admin:
+    # Used only to create the first admin user when no users exist yet. Change the password
+    # after logging in for the first time.
+    username: ${ADMIN_USERNAME:admin}
+    password: ${ADMIN_PASSWORD:admin}
+
 ai:
   context:
     # Size of the model's context window, in tokens. Prompts are built to fit inside it.

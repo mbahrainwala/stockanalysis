@@ -10,9 +10,11 @@ import com.stocks.tracker.model.Market;
 import com.stocks.tracker.model.SpeculationEntry;
 import com.stocks.tracker.model.SpeculationEntry.Source;
 import com.stocks.tracker.model.Stock;
+import com.stocks.tracker.model.User;
 import com.stocks.tracker.repository.HoldingRepository;
 import com.stocks.tracker.repository.SpeculationEntryRepository;
 import com.stocks.tracker.repository.StockRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -49,20 +51,23 @@ public class SpeculationService {
     private final StockRepository stocks;
     private final HoldingRepository holdings;
     private final MarketDataService marketData;
+    private final CurrentUserService currentUser;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public SpeculationService(SpeculationEntryRepository entries, StockRepository stocks,
-                              HoldingRepository holdings, MarketDataService marketData) {
+                              HoldingRepository holdings, MarketDataService marketData,
+                              CurrentUserService currentUser) {
         this.entries = entries;
         this.stocks = stocks;
         this.holdings = holdings;
         this.marketData = marketData;
+        this.currentUser = currentUser;
     }
 
     @Transactional(readOnly = true)
     public List<SpeculationRow> listRows() {
         LocalDateTime now = LocalDateTime.now();
-        return entries.findAllByOrderByAddedAtDesc().stream().map(e -> {
+        return entries.findAllByOwnerIdOrderByAddedAtDesc(currentUser.currentUserId()).stream().map(e -> {
             Stock s = e.getStock();
             BigDecimal price = s.getCurrentPrice();
             BigDecimal change = price == null || e.getAddedPrice().signum() <= 0 ? null
@@ -82,6 +87,7 @@ public class SpeculationService {
 
     /** Looks the symbol up live (which also validates it), then records it at today's price. */
     public SpeculationEntry add(String symbolInput, Market market, String note, Source source) {
+        User owner = currentUser.currentUser();
         QuoteResult quote = marketData.fetchQuote(symbolInput, market);
         Stock stock = stocks.findBySymbolIgnoreCaseAndMarket(quote.symbol(), market).orElseGet(() -> {
             Stock s = new Stock(quote.symbol(), quote.market(), quote.companyName());
@@ -92,32 +98,37 @@ public class SpeculationService {
         stock.setCurrency(quote.currency());
         stock.setPriceUpdatedAt(LocalDateTime.now());
         stock = stocks.save(stock);
-        if (entries.existsByStockId(stock.getId())) {
+        if (entries.existsByOwnerIdAndStockId(owner.getId(), stock.getId())) {
             throw new IllegalArgumentException(stock.getSymbol() + " is already on the speculation list.");
         }
         String cleanNote = note == null || note.isBlank() ? null : note.strip();
         if (cleanNote != null && cleanNote.length() > 1000) {
             cleanNote = cleanNote.substring(0, 1000);
         }
-        return entries.save(new SpeculationEntry(stock, LocalDateTime.now(), quote.price(), source, cleanNote));
+        return entries.save(new SpeculationEntry(owner, stock, LocalDateTime.now(), quote.price(), source, cleanNote));
+    }
+
+    private SpeculationEntry ownedEntry(Long id) {
+        SpeculationEntry e = entries.findById(id).orElseThrow(() -> new IllegalArgumentException("Entry not found."));
+        if (e.getOwner() == null || !e.getOwner().getId().equals(currentUser.currentUserId())) {
+            throw new IllegalArgumentException("Entry not found.");
+        }
+        return e;
     }
 
     public void delete(Long id) {
-        if (!entries.existsById(id)) {
-            throw new IllegalArgumentException("Entry not found.");
-        }
-        entries.deleteById(id);
+        entries.delete(ownedEntry(id));
     }
 
     @Transactional(readOnly = true)
     public List<PricePoint> history(Long id, String range) {
-        SpeculationEntry e = entries.findById(id).orElseThrow(() -> new IllegalArgumentException("Entry not found."));
+        SpeculationEntry e = ownedEntry(id);
         return marketData.fetchHistory(e.getStock().getSymbol(), e.getStock().getMarket(), range);
     }
 
     @Transactional(readOnly = true)
     public boolean isEmpty() {
-        return entries.count() == 0;
+        return entries.countByOwnerId(currentUser.currentUserId()) == 0;
     }
 
     /** Text section for the LLM prompt, or null when the list is empty. */
@@ -198,7 +209,8 @@ public class SpeculationService {
             }
             try {
                 var existing = stocks.findBySymbolIgnoreCaseAndMarket(symbol, market);
-                if (existing.isPresent() && holdings.existsByStockId(existing.get().getId())) {
+                if (existing.isPresent()
+                        && holdings.existsByTradingAccount_Owner_IdAndStockId(currentUser.currentUserId(), existing.get().getId())) {
                     skipped.add(symbol + " (already owned)");
                     continue;
                 }

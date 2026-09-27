@@ -1,9 +1,12 @@
 package com.stocks.tracker.service;
 
 import com.stocks.tracker.model.SavedAnalysis;
+import com.stocks.tracker.model.User;
 import com.stocks.tracker.repository.SavedAnalysisRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.concurrent.DelegatingSecurityContextExecutorService;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
@@ -34,6 +37,7 @@ public class AnalysisJobService {
     public static final class Job {
         private final String id = UUID.randomUUID().toString();
         private final String kind;
+        private final Long userId;
         private final long startedAt = System.currentTimeMillis();
         private volatile State state = State.RUNNING;
         private volatile String phase = "Starting";
@@ -42,12 +46,18 @@ public class AnalysisJobService {
         private volatile long finishedAt;
         private volatile Future<?> future;
 
-        Job(String kind) {
+        Job(String kind, Long userId) {
             this.kind = kind;
+            this.userId = userId;
         }
 
         public String getId() {
             return id;
+        }
+
+        /** Whether {@code userId} may see or act on this job. */
+        public boolean belongsTo(Long userId) {
+            return this.userId != null && this.userId.equals(userId);
         }
 
         /** What a running job is doing right now, for progress display. */
@@ -73,22 +83,28 @@ public class AnalysisJobService {
     }
 
     private final LlmService llmService;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+    /**
+     * Wrapped so the request's security context (needed by services that scope data to the
+     * signed-in user) is propagated to whichever pool thread actually runs the job.
+     */
+    private final ExecutorService executor = new DelegatingSecurityContextExecutorService(Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "portfolio-analysis");
         t.setDaemon(true);
         return t;
-    });
+    }));
     private final Map<String, Job> jobs = new LinkedHashMap<>();
 
     private final SavedAnalysisRepository savedAnalyses;
 
     private final SpeculationService speculation;
+    private final CurrentUserService currentUser;
 
     public AnalysisJobService(LlmService llmService, SavedAnalysisRepository savedAnalyses,
-                              SpeculationService speculation) {
+                              SpeculationService speculation, CurrentUserService currentUser) {
         this.llmService = llmService;
         this.savedAnalyses = savedAnalyses;
         this.speculation = speculation;
+        this.currentUser = currentUser;
     }
 
     /** Builds a prompt in the background (it may fetch data); reports progress through {@code phase}. */
@@ -101,23 +117,30 @@ public class AnalysisJobService {
         LlmService.ChatResult run(java.util.function.Consumer<String> phase) throws Exception;
     }
 
-    /** Starts a job for a ready-made prompt, or returns the one of the same kind already running. */
+    /** Scopes job identity (single-flight, "latest") to the signed-in user. */
+    private String scopedKind(String kind, Long userId) {
+        return kind + "#" + userId;
+    }
+
+    /** Starts a job for a ready-made prompt, or returns the caller's own job of the same kind already running. */
     public synchronized Job start(String kind, String prompt) {
         return start(kind, phase -> prompt);
     }
 
     /**
-     * Starts a job whose prompt is built in the background, or returns the one of the same kind already
-     * running. The built prompt is what gets sent to the model and saved with the analysis.
+     * Starts a job whose prompt is built in the background, or returns the caller's own job of the same
+     * kind already running. The built prompt is what gets sent to the model and saved with the analysis.
      */
     public synchronized Job start(String kind, PromptBuilder builder) {
+        Long userId = currentUser.currentUserId();
+        String scoped = scopedKind(kind, userId);
         for (Job existing : jobs.values()) {
-            if (existing.state == State.RUNNING && existing.kind.equals(kind)) {
+            if (existing.state == State.RUNNING && scopedKind(existing.kind, existing.userId).equals(scoped)) {
                 return existing;
             }
         }
         java.util.concurrent.atomic.AtomicReference<String> built = new java.util.concurrent.atomic.AtomicReference<>();
-        return submit(kind, built, phase -> {
+        return submit(kind, userId, built, phase -> {
             String prompt = builder.build(phase);
             built.set(prompt);
             phase.accept("Waiting for the model");
@@ -127,20 +150,22 @@ public class AnalysisJobService {
 
     /**
      * Runs an arbitrary model call in the background (used for chat). Unlike {@link #start}, a second
-     * request while one is running is refused (returns null) rather than joined, since each call is
-     * a different question.
+     * request while the caller's own job is running is refused (returns null) rather than joined, since
+     * each call is a different question.
      */
     public synchronized Job startExclusive(String kind, ChatTask task) {
+        Long userId = currentUser.currentUserId();
+        String scoped = scopedKind(kind, userId);
         for (Job existing : jobs.values()) {
-            if (existing.state == State.RUNNING && existing.kind.equals(kind)) {
+            if (existing.state == State.RUNNING && scopedKind(existing.kind, existing.userId).equals(scoped)) {
                 return null;
             }
         }
-        return submit(kind, new java.util.concurrent.atomic.AtomicReference<>(), task);
+        return submit(kind, userId, new java.util.concurrent.atomic.AtomicReference<>(), task);
     }
 
-    private Job submit(String kind, java.util.concurrent.atomic.AtomicReference<String> prompt, ChatTask task) {
-        Job job = new Job(kind);
+    private Job submit(String kind, Long userId, java.util.concurrent.atomic.AtomicReference<String> prompt, ChatTask task) {
+        Job job = new Job(kind, userId);
         jobs.put(job.id, job);
         while (jobs.size() > MAX_JOBS_KEPT) {
             jobs.remove(jobs.keySet().iterator().next());
@@ -189,7 +214,8 @@ public class AnalysisJobService {
     /** A failure to save must not turn a finished analysis into a failed one. */
     private void save(String prompt, LlmService.ChatResult result) {
         try {
-            savedAnalyses.save(new SavedAnalysis(LocalDateTime.now(), result.model(), result.durationMs(), prompt, result.response()));
+            User owner = currentUser.currentUser();
+            savedAnalyses.save(new SavedAnalysis(owner, LocalDateTime.now(), result.model(), result.durationMs(), prompt, result.response()));
         } catch (Exception e) {
             log.warn("Could not save analysis: {}", e.getMessage());
         }
@@ -197,10 +223,11 @@ public class AnalysisJobService {
 
     /**
      * Cancels a running analysis by interrupting its thread, which aborts the in-flight
-     * request to the model server. Returns false if the job is unknown or already finished.
+     * request to the model server. Returns false if the job is unknown, someone else's, or
+     * already finished.
      */
     public boolean cancel(String id) {
-        Job job = get(id);
+        Job job = getOwned(id);
         if (job == null) {
             return false;
         }
@@ -218,11 +245,15 @@ public class AnalysisJobService {
         return true;
     }
 
-    /** The most recently started job of the given kind, or null if there is none (e.g. after a restart). */
+    /**
+     * The current user's most recently started job of the given kind, or null if there is none
+     * (e.g. after a restart, or nothing of that kind was ever started for this user).
+     */
     public synchronized Job latest(String kind) {
+        Long userId = currentUser.currentUserId();
         Job found = null;
         for (Job j : jobs.values()) {
-            if (j.kind.equals(kind)) {
+            if (j.kind.equals(kind) && j.belongsTo(userId)) {
                 found = j;
             }
         }
@@ -231,6 +262,12 @@ public class AnalysisJobService {
 
     public synchronized Job get(String id) {
         return jobs.get(id);
+    }
+
+    /** Like {@link #get}, but returns null instead of another user's job. */
+    public synchronized Job getOwned(String id) {
+        Job job = jobs.get(id);
+        return job == null || !job.belongsTo(currentUser.currentUserId()) ? null : job;
     }
 
     @PreDestroy

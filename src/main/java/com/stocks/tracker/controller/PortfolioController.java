@@ -3,7 +3,9 @@ package com.stocks.tracker.controller;
 import com.stocks.tracker.dto.QuoteResult;
 import com.stocks.tracker.model.Market;
 import com.stocks.tracker.repository.TradingAccountRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import com.stocks.tracker.service.AnalysisJobService;
+import com.stocks.tracker.service.BrandingService;
 import com.stocks.tracker.service.LlmService;
 import com.stocks.tracker.service.PortfolioService;
 import com.stocks.tracker.service.SpeculationChatService;
@@ -28,6 +30,9 @@ public class PortfolioController {
     private final SpeculationChatService speculationChatService;
     private final com.stocks.tracker.service.ExternalRatingService ratingService;
     private final com.stocks.tracker.service.MarketBriefService briefService;
+    private final CurrentUserService currentUser;
+    private final BrandingService brandingService;
+    private final com.stocks.tracker.repository.UserRepository userRepository;
 
     public PortfolioController(PortfolioService portfolioService, TradingAccountRepository accountRepository,
                                LlmService llmService, AnalysisJobService analysisJobService,
@@ -35,7 +40,10 @@ public class PortfolioController {
                                SpeculationService speculationService,
                                SpeculationChatService speculationChatService,
                                com.stocks.tracker.service.ExternalRatingService ratingService,
-                               com.stocks.tracker.service.MarketBriefService briefService) {
+                               com.stocks.tracker.service.MarketBriefService briefService,
+                               CurrentUserService currentUser,
+                               BrandingService brandingService,
+                               com.stocks.tracker.repository.UserRepository userRepository) {
         this.briefService = briefService;
         this.ratingService = ratingService;
         this.speculationChatService = speculationChatService;
@@ -45,15 +53,26 @@ public class PortfolioController {
         this.portfolioService = portfolioService;
         this.llmService = llmService;
         this.accountRepository = accountRepository;
+        this.currentUser = currentUser;
+        this.brandingService = brandingService;
+        this.userRepository = userRepository;
     }
 
     @GetMapping("/")
     public String index(Model model) {
+        var user = currentUser.currentUser();
+        boolean isAdmin = user.getRole() == com.stocks.tracker.model.User.Role.ADMIN;
         model.addAttribute("portfolio", portfolioService.buildPortfolioView());
-        model.addAttribute("accounts", accountRepository.findAll());
+        model.addAttribute("accounts", accountRepository.findAllByOwnerId(user.getId()));
         model.addAttribute("markets", Market.values());
         model.addAttribute("speculation", speculationService.listRows());
         model.addAttribute("currencies", com.stocks.tracker.model.Currencies.SUPPORTED);
+        model.addAttribute("username", user.getUsername());
+        model.addAttribute("isAdmin", isAdmin);
+        model.addAttribute("companyName", brandingService.companyName());
+        if (isAdmin) {
+            model.addAttribute("users", userRepository.findAllByOrderByUsernameAsc());
+        }
         return "index";
     }
 
@@ -248,6 +267,45 @@ public class PortfolioController {
         }
     }
 
+    /** The current user's portfolio as CSV, one column per trading account (share counts). */
+    @GetMapping("/portfolio/export.csv")
+    public org.springframework.http.ResponseEntity<byte[]> exportPortfolioCsv() {
+        var view = portfolioService.buildPortfolioView();
+        StringBuilder sb = new StringBuilder("Symbol,Market,Company,Price");
+        for (var account : view.accounts()) {
+            sb.append(',').append(csvField(account.getName()));
+        }
+        sb.append(",Total Shares,Total Value,Gain/Loss (USD)\r\n");
+        for (var row : view.rows()) {
+            sb.append(csvField(row.getSymbol())).append(',')
+                    .append(csvField(row.getMarket().getLabel())).append(',')
+                    .append(csvField(row.getCompanyName())).append(',')
+                    .append(row.getCurrentPrice() == null ? "" : row.getCurrentPrice().toPlainString());
+            for (var account : view.accounts()) {
+                BigDecimal shares = row.getSharesByAccountId().get(account.getId());
+                sb.append(',').append(shares == null ? "" : shares.stripTrailingZeros().toPlainString());
+            }
+            sb.append(',').append(row.getTotalShares().stripTrailingZeros().toPlainString())
+                    .append(',').append(row.getTotalValue().toPlainString())
+                    .append(',').append(row.getGainLossUsd() == null ? "" : row.getGainLossUsd().toPlainString())
+                    .append("\r\n");
+        }
+        byte[] csv = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return org.springframework.http.ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=\"portfolio.csv\"")
+                .contentType(org.springframework.http.MediaType.parseMediaType("text/csv"))
+                .body(csv);
+    }
+
+    private static String csvField(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.indexOf(',') >= 0 || value.indexOf('"') >= 0 || value.indexOf('\n') >= 0
+                ? '"' + value.replace("\"", "\"\"") + '"'
+                : value;
+    }
+
     @PostMapping("/prices/refresh")
     public String refreshPrices(RedirectAttributes redirectAttributes) {
         var running = analysisJobService.latest(AnalysisJobService.KIND_ANALYSIS);
@@ -364,7 +422,7 @@ public class PortfolioController {
     @GetMapping("/api/ai/analyses")
     @ResponseBody
     public java.util.List<java.util.Map<String, Object>> savedAnalyses() {
-        return savedAnalysisRepository.findAllByOrderByCreatedAtDesc().stream()
+        return savedAnalysisRepository.findAllByOwnerIdOrderByCreatedAtDesc(currentUser.currentUserId()).stream()
                 .map(a -> java.util.Map.<String, Object>of(
                         "id", a.getId(),
                         "createdAt", a.getCreatedAt().toString(),
@@ -376,7 +434,7 @@ public class PortfolioController {
     @GetMapping("/api/ai/analyses/{id}")
     @ResponseBody
     public org.springframework.http.ResponseEntity<?> savedAnalysis(@PathVariable Long id) {
-        return savedAnalysisRepository.findById(id)
+        return savedAnalysisRepository.findByIdAndOwnerId(id, currentUser.currentUserId())
                 .<org.springframework.http.ResponseEntity<?>>map(a -> org.springframework.http.ResponseEntity.ok(java.util.Map.of(
                         "id", a.getId(),
                         "createdAt", a.getCreatedAt().toString(),
@@ -390,7 +448,7 @@ public class PortfolioController {
     @PostMapping("/api/ai/analyses/{id}/delete")
     @ResponseBody
     public org.springframework.http.ResponseEntity<?> deleteSavedAnalysis(@PathVariable Long id) {
-        if (!savedAnalysisRepository.existsById(id)) {
+        if (!savedAnalysisRepository.existsByIdAndOwnerId(id, currentUser.currentUserId())) {
             return org.springframework.http.ResponseEntity.status(404).body("Analysis not found.");
         }
         savedAnalysisRepository.deleteById(id);
@@ -427,7 +485,7 @@ public class PortfolioController {
     @GetMapping("/api/ai/analyze/{id}")
     @ResponseBody
     public org.springframework.http.ResponseEntity<?> analysisStatus(@PathVariable String id) {
-        var job = analysisJobService.get(id);
+        var job = analysisJobService.getOwned(id);
         if (job == null) {
             return org.springframework.http.ResponseEntity.status(404).body("Analysis not found (the app may have restarted).");
         }

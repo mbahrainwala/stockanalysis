@@ -4,9 +4,11 @@ import com.stocks.tracker.dto.QuoteResult;
 import com.stocks.tracker.model.Market;
 import com.stocks.tracker.model.SpeculationEntry;
 import com.stocks.tracker.model.Stock;
+import com.stocks.tracker.model.User;
 import com.stocks.tracker.repository.HoldingRepository;
 import com.stocks.tracker.repository.SpeculationEntryRepository;
 import com.stocks.tracker.repository.StockRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -30,6 +32,7 @@ class SpeculationServiceTest {
     private StockRepository stocks;
     private HoldingRepository holdings;
     private MarketDataService marketData;
+    private CurrentUserService currentUser;
     private SpeculationService service;
 
     @BeforeEach
@@ -38,7 +41,11 @@ class SpeculationServiceTest {
         stocks = mock(StockRepository.class);
         holdings = mock(HoldingRepository.class);
         marketData = mock(MarketDataService.class);
-        service = new SpeculationService(entries, stocks, holdings, marketData);
+        currentUser = mock(CurrentUserService.class);
+        service = new SpeculationService(entries, stocks, holdings, marketData, currentUser);
+        User owner = new User("tester", "hash", User.Role.USER);
+        when(currentUser.currentUser()).thenReturn(owner);
+        when(currentUser.currentUserId()).thenReturn(owner.getId());
         when(stocks.findBySymbolIgnoreCaseAndMarket(any(), any())).thenReturn(Optional.empty());
         when(stocks.save(any(Stock.class))).thenAnswer(i -> i.getArgument(0));
         when(entries.save(any(SpeculationEntry.class))).thenAnswer(i -> i.getArgument(0));
@@ -76,7 +83,7 @@ class SpeculationServiceTest {
     void skipsStocksAlreadyOwned() {
         Stock owned = new Stock("AAPL", Market.US, "Apple");
         when(stocks.findBySymbolIgnoreCaseAndMarket("AAPL", Market.US)).thenReturn(Optional.of(owned));
-        when(holdings.existsByStockId(owned.getId())).thenReturn(true);
+        when(holdings.existsByTradingAccount_Owner_IdAndStockId(any(), eq(owned.getId()))).thenReturn(true);
 
         SpeculationService.AiPickResult result = service.addAiPicks(
                 "```speculation\n[{\"symbol\":\"AAPL\",\"market\":\"US\",\"reason\":\"x\"}]\n```");

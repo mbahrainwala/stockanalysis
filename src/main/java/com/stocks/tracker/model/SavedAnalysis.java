@@ -13,6 +13,11 @@ public class SavedAnalysis {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** Nullable only so existing rows can be backfilled on upgrade; always set by application code. */
+    @ManyToOne(optional = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id")
+    private User owner;
+
     @Column(nullable = false)
     private LocalDateTime createdAt;
 
@@ -32,7 +37,8 @@ public class SavedAnalysis {
     public SavedAnalysis() {
     }
 
-    public SavedAnalysis(LocalDateTime createdAt, String model, long durationMs, String prompt, String response) {
+    public SavedAnalysis(User owner, LocalDateTime createdAt, String model, long durationMs, String prompt, String response) {
+        this.owner = owner;
         this.createdAt = createdAt;
         this.model = model;
         this.durationMs = durationMs;
@@ -42,6 +48,14 @@ public class SavedAnalysis {
 
     public Long getId() {
         return id;
+    }
+
+    public User getOwner() {
+        return owner;
+    }
+
+    public void setOwner(User owner) {
+        this.owner = owner;
     }
 
     public LocalDateTime getCreatedAt() {

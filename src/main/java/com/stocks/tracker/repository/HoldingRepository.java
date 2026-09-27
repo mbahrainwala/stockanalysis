@@ -10,9 +10,9 @@ import java.util.Optional;
 public interface HoldingRepository extends JpaRepository<Holding, Long> {
 
     @EntityGraph(attributePaths = {"tradingAccount", "stock"})
-    List<Holding> findAll();
+    List<Holding> findAllByTradingAccount_Owner_Id(Long ownerId);
 
     Optional<Holding> findByTradingAccountIdAndStockId(Long tradingAccountId, Long stockId);
 
-    boolean existsByStockId(Long stockId);
+    boolean existsByTradingAccount_Owner_IdAndStockId(Long ownerId, Long stockId);
 }

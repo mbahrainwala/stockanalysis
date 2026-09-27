@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
  * Nothing is owned, so there are no shares or per-account costs here.
  */
 @Entity
-@Table(name = "speculation_entry", uniqueConstraints = @UniqueConstraint(columnNames = "stock_id"))
+@Table(name = "speculation_entry", uniqueConstraints = @UniqueConstraint(columnNames = {"owner_id", "stock_id"}))
 public class SpeculationEntry {
 
     public enum Source { USER, AI }
@@ -19,6 +19,11 @@ public class SpeculationEntry {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    /** Nullable only so existing rows can be backfilled on upgrade; always set by application code. */
+    @ManyToOne(optional = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id")
+    private User owner;
 
     @ManyToOne(optional = false, fetch = FetchType.LAZY)
     @JoinColumn(name = "stock_id", nullable = false)
@@ -41,7 +46,8 @@ public class SpeculationEntry {
     public SpeculationEntry() {
     }
 
-    public SpeculationEntry(Stock stock, LocalDateTime addedAt, BigDecimal addedPrice, Source addedBy, String note) {
+    public SpeculationEntry(User owner, Stock stock, LocalDateTime addedAt, BigDecimal addedPrice, Source addedBy, String note) {
+        this.owner = owner;
         this.stock = stock;
         this.addedAt = addedAt;
         this.addedPrice = addedPrice;
@@ -51,6 +57,14 @@ public class SpeculationEntry {
 
     public Long getId() {
         return id;
+    }
+
+    public User getOwner() {
+        return owner;
+    }
+
+    public void setOwner(User owner) {
+        this.owner = owner;
     }
 
     public Stock getStock() {
