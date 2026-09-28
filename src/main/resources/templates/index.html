@@ -436,7 +436,10 @@
 <dialog id="history-dialog" class="modal modal-wide">
     <div class="modal-head">
         <h2>Saved Analyses</h2>
-        <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
+        <div class="modal-head-actions">
+            <button type="button" class="modal-close" id="history-expand" aria-label="Expand" title="Expand / restore size">&#x26F6;</button>
+            <button type="button" class="modal-close" id="history-close" aria-label="Close">&times;</button>
+        </div>
     </div>
     <p id="history-empty" class="muted" hidden>No saved analyses yet. Each completed portfolio analysis is saved here automatically.</p>
     <div class="history-layout">

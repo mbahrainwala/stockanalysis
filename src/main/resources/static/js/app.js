@@ -667,8 +667,17 @@ document.addEventListener("DOMContentLoaded", () => {
     let selectedId = null;
 
     document.getElementById("history-close").addEventListener("click", () => dialog.close());
+    document.getElementById("history-expand").addEventListener("click", () => {
+        // Drop any size the user dragged to, so the class (expanded or default) decides the size.
+        dialog.style.width = "";
+        dialog.style.height = "";
+        dialog.classList.toggle("expanded");
+    });
     dialog.addEventListener("click", e => {
-        if (e.target === dialog) {
+        // Only a click on the backdrop (outside the box) closes; releasing a resize drag also targets the dialog.
+        const r = dialog.getBoundingClientRect();
+        const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+        if (e.target === dialog && outside) {
             dialog.close();
         }
     });

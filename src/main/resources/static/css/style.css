@@ -688,6 +688,37 @@ body {
     .history-list { width: 100%; max-height: 25vh; }
 }
 
+/* Saved Analyses popup: drag the bottom-right corner to resize, or use the expand button. */
+#history-dialog {
+    resize: both;
+    overflow: auto;
+    min-width: 360px;
+    min-height: 240px;
+    max-width: 98vw;
+    max-height: 96vh;
+}
+#history-dialog[open] {
+    display: flex;
+    flex-direction: column;
+}
+#history-dialog.expanded {
+    width: 96vw;
+    height: 92vh;
+}
+#history-dialog .history-layout { flex: 1; min-height: 0; }
+#history-dialog .history-list,
+#history-dialog .history-detail { max-height: 100%; }
+#history-dialog .history-list { align-self: stretch; }
+#history-dialog .history-detail {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+#history-dialog .history-detail .ai-response { max-height: none; flex: 1; min-height: 120px; }
+#history-dialog .history-list { max-height: none; }
+.modal-head-actions { display: flex; align-items: center; gap: 4px; }
+
 /* Speculation list */
 .badge {
     display: inline-block;
