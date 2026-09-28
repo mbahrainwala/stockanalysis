@@ -292,6 +292,55 @@ document.addEventListener("DOMContentLoaded", () => {
         show(saved);
     }
 
+    // Per-user custom prompt (available to every user, not just admins).
+    const cpDialog = document.getElementById("custom-prompt-dialog");
+    const cpOpenBtn = document.getElementById("custom-prompt-open");
+    if (cpDialog && cpOpenBtn) {
+        const customEl = document.getElementById("ai-custom-prompt");
+        const promptStatus = document.getElementById("ai-prompt-status");
+        let defaultPrompt = "";
+        const save = async () => {
+            const r = await csrfFetch("/api/ai/prompt", {
+                method: "POST",
+                body: new URLSearchParams({customPrompt: customEl.value})
+            });
+            promptStatus.className = "ai-status " + (r.ok ? "ok" : "bad");
+            if (r.ok) {
+                customEl.value = (await r.json()).customPrompt;
+                promptStatus.textContent = "Saved.";
+            } else {
+                promptStatus.textContent = await r.text();
+            }
+        };
+        cpOpenBtn.addEventListener("click", async () => {
+            promptStatus.textContent = "";
+            cpDialog.showModal();
+            const r = await fetch("/api/ai/prompt");
+            if (r.ok) {
+                const p = await r.json();
+                customEl.value = p.customPrompt;
+                defaultPrompt = p.defaultPrompt;
+            }
+            customEl.focus();
+        });
+        document.getElementById("ai-prompt-form").addEventListener("submit", e => {
+            e.preventDefault();
+            save();
+        });
+        document.getElementById("ai-prompt-reset").addEventListener("click", () => {
+            if (defaultPrompt) {
+                customEl.value = defaultPrompt;
+                save();
+            }
+        });
+        document.getElementById("custom-prompt-close").addEventListener("click", () => cpDialog.close());
+        cpDialog.addEventListener("click", e => {
+            if (e.target === cpDialog) {
+                cpDialog.close();
+            }
+        });
+    }
+
     const pwDialog = document.getElementById("change-password-dialog");
     const pwOpenBtn = document.getElementById("change-password-open");
     if (pwDialog && pwOpenBtn) {
@@ -514,27 +563,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    const customEl = document.getElementById("ai-custom-prompt");
-    const promptStatus = document.getElementById("ai-prompt-status");
-    document.getElementById("ai-prompt-form").addEventListener("submit", async e => {
-        e.preventDefault();
-        const r = await csrfFetch("/api/ai/prompt", {
-            method: "POST",
-            body: new URLSearchParams({customPrompt: customEl.value})
-        });
-        promptStatus.className = "ai-status " + (r.ok ? "ok" : "bad");
-        if (r.ok) {
-            customEl.value = (await r.json()).customPrompt;
-            promptStatus.textContent = "Saved.";
-        } else {
-            promptStatus.textContent = await r.text();
-        }
-    });
-
     fetch("/api/ai/config").then(r => r.json()).then(c => {
         endpointEl.value = c.endpoint;
         setProvider(c.provider || "auto");
-        customEl.value = c.customPrompt || "";
         testConnection(c.model);
     });
 });

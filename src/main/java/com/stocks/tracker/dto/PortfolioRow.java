@@ -4,6 +4,7 @@ import com.stocks.tracker.model.Market;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -21,6 +22,7 @@ public class PortfolioRow {
     private final String companyName;
     private final String currency;
     private final BigDecimal currentPrice;
+    private final LocalDateTime priceUpdatedAt;
     private final Map<Long, BigDecimal> sharesByAccountId = new LinkedHashMap<>();
     private final Map<Long, BigDecimal> valueByAccountId = new LinkedHashMap<>();
     private final Map<Long, String> currencySymbolByAccountId = new LinkedHashMap<>();
@@ -31,13 +33,15 @@ public class PortfolioRow {
     private BigDecimal gainLossUsd;
     private BigDecimal costUsd = BigDecimal.ZERO;
 
-    public PortfolioRow(Long stockId, String symbol, Market market, String companyName, String currency, BigDecimal currentPrice) {
+    public PortfolioRow(Long stockId, String symbol, Market market, String companyName, String currency, BigDecimal currentPrice,
+                        LocalDateTime priceUpdatedAt) {
         this.stockId = stockId;
         this.symbol = symbol;
         this.market = market;
         this.companyName = companyName;
         this.currency = currency;
         this.currentPrice = currentPrice;
+        this.priceUpdatedAt = priceUpdatedAt;
     }
 
     /**
@@ -85,6 +89,11 @@ public class PortfolioRow {
 
     public BigDecimal getCurrentPrice() {
         return currentPrice;
+    }
+
+    /** When the price was last refreshed; null if it never has been. */
+    public LocalDateTime getPriceUpdatedAt() {
+        return priceUpdatedAt;
     }
 
     public Map<Long, BigDecimal> getSharesByAccountId() {

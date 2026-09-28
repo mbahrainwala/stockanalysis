@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.stocks.tracker.model.AppSetting;
 import com.stocks.tracker.repository.AppSettingRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -56,7 +57,12 @@ public class LlmService {
     // Keys keep their original "ollama." prefix so previously saved settings still load.
     private static final String KEY_ENDPOINT = "ollama.endpoint";
     private static final String KEY_MODEL = "ollama.model";
-    private static final String KEY_CUSTOM_PROMPT = "ollama.customPrompt";
+    /** Custom prompts are per user: the key is this prefix + the user id + the suffix. */
+    private static final String KEY_CUSTOM_PROMPT_PREFIX = "user.";
+    private static final String KEY_CUSTOM_PROMPT_SUFFIX = ".customPrompt";
+
+    public static final String DEFAULT_CUSTOM_PROMPT =
+            "I would like to invest for the long term. Along with the analysis, look at other stocks in the market which I should invest in too.";
     private static final String KEY_PROVIDER = "ai.provider";
 
     private final AppSettingRepository settings;
@@ -67,12 +73,15 @@ public class LlmService {
 
     private final AiContextProperties limits;
 
-    public LlmService(AppSettingRepository settings, AiContextProperties limits) {
+    private final CurrentUserService currentUser;
+
+    public LlmService(AppSettingRepository settings, AiContextProperties limits, CurrentUserService currentUser) {
         this.settings = settings;
         this.limits = limits;
+        this.currentUser = currentUser;
     }
 
-    public record Config(String provider, String endpoint, String model, String customPrompt) {
+    public record Config(String provider, String endpoint, String model) {
     }
 
     /** provider/endpoint describe what was actually reached (may differ from what was requested in auto mode). */
@@ -88,8 +97,7 @@ public class LlmService {
         String provider = settings.findById(KEY_PROVIDER).map(AppSetting::getValue).orElse(AUTO);
         String endpoint = settings.findById(KEY_ENDPOINT).map(AppSetting::getValue).orElse(OLLAMA_DEFAULT);
         String model = settings.findById(KEY_MODEL).map(AppSetting::getValue).orElse("");
-        String custom = settings.findById(KEY_CUSTOM_PROMPT).map(AppSetting::getValue).orElse("");
-        return new Config(provider, endpoint, model, custom == null ? "" : custom);
+        return new Config(provider, endpoint, model);
     }
 
     @Transactional
@@ -102,14 +110,27 @@ public class LlmService {
         return getConfig();
     }
 
+    private static String customPromptKey(Long userId) {
+        return KEY_CUSTOM_PROMPT_PREFIX + userId + KEY_CUSTOM_PROMPT_SUFFIX;
+    }
+
+    /** The signed-in user's custom prompt: the default until they save their own (which may be empty). */
+    @Transactional(readOnly = true)
+    public String getCustomPrompt() {
+        return settings.findById(customPromptKey(currentUser.currentUserId()))
+                .map(AppSetting::getValue)
+                .map(v -> v == null ? "" : v)
+                .orElse(DEFAULT_CUSTOM_PROMPT);
+    }
+
     @Transactional
-    public Config saveCustomPrompt(String customPrompt) {
+    public String saveCustomPrompt(String customPrompt) {
         String text = customPrompt == null ? "" : customPrompt.strip();
         if (text.length() > 1000) {
             throw new IllegalArgumentException("Custom prompt is limited to 1000 characters.");
         }
-        settings.save(new AppSetting(KEY_CUSTOM_PROMPT, text));
-        return getConfig();
+        settings.save(new AppSetting(customPromptKey(currentUser.currentUserId()), text));
+        return text;
     }
 
     /** Hardcoded prompt followed by the user's custom prompt; blank parts are skipped. */
@@ -265,7 +286,7 @@ public class LlmService {
         body.put("model", config.model());
         body.put("stream", false);
         ArrayNode messages = body.putArray("messages");
-        String system = buildSystemPrompt(config.customPrompt());
+        String system = buildSystemPrompt(getCustomPrompt());
         if (extraSystem != null && !extraSystem.isBlank()) {
             system = system.isEmpty() ? extraSystem.strip() : system + "\n\n" + extraSystem.strip();
         }

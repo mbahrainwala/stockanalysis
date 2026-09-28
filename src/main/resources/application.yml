@@ -13,6 +13,9 @@ spring:
           content:
             enabled: true
             paths: /**
+  flyway:
+    # {vendor} resolves to h2 or mysql, so each database has its own dialect-specific scripts.
+    locations: classpath:db/migration/{vendor}
   jpa:
     open-in-view: false
     properties:

@@ -21,8 +21,8 @@ public class SpeculationEntry {
     private Long id;
 
     /** Nullable only so existing rows can be backfilled on upgrade; always set by application code. */
-    @ManyToOne(optional = true, fetch = FetchType.LAZY)
-    @JoinColumn(name = "owner_id")
+    @ManyToOne(optional = false, fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id", nullable = false)
     private User owner;
 
     @ManyToOne(optional = false, fetch = FetchType.LAZY)

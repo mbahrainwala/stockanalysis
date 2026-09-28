@@ -352,11 +352,19 @@ public class PortfolioController {
         }
     }
 
+    /** The signed-in user's own custom prompt, plus the default the Reset button restores. */
+    @GetMapping("/api/ai/prompt")
+    @ResponseBody
+    public java.util.Map<String, String> aiPrompt() {
+        return java.util.Map.of("customPrompt", llmService.getCustomPrompt(),
+                "defaultPrompt", LlmService.DEFAULT_CUSTOM_PROMPT);
+    }
+
     @PostMapping("/api/ai/prompt")
     @ResponseBody
     public org.springframework.http.ResponseEntity<?> saveAiPrompt(@RequestParam(required = false) String customPrompt) {
         try {
-            return org.springframework.http.ResponseEntity.ok(llmService.saveCustomPrompt(customPrompt));
+            return org.springframework.http.ResponseEntity.ok(java.util.Map.of("customPrompt", llmService.saveCustomPrompt(customPrompt)));
         } catch (IllegalArgumentException e) {
             return org.springframework.http.ResponseEntity.badRequest().body(e.getMessage());
         }

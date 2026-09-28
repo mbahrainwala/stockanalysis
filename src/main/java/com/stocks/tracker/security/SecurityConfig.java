@@ -25,7 +25,7 @@ public class SecurityConfig {
         http
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/login", "/css/**", "/js/**", "/actuator/health").permitAll()
-                        .requestMatchers("/admin/**", "/api/ai/config", "/api/ai/prompt",
+                        .requestMatchers("/admin/**", "/api/ai/config",
                                 "/api/ai/status", "/api/ai/chat").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .formLogin(form -> form

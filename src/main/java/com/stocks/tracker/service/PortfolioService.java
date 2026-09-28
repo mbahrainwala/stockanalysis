@@ -120,7 +120,8 @@ public class PortfolioService {
             Stock stock = holding.getStock();
             PortfolioRow row = rowsByStockId.computeIfAbsent(stock.getId(),
                     id -> new PortfolioRow(stock.getId(), stock.getSymbol(), stock.getMarket(),
-                            stock.getCompanyName(), currencyOf(stock), stock.getCurrentPrice()));
+                            stock.getCompanyName(), currencyOf(stock), stock.getCurrentPrice(),
+                            stock.getPriceUpdatedAt()));
 
             Metrics m = metrics(holding, null);
             row.putHolding(holding.getTradingAccount().getId(), holding.getShares(), m.nativeValue(), m.value(),

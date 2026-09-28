@@ -22,6 +22,7 @@
                 <button type="submit" class="btn btn-primary">Refresh Market Prices</button>
             </form>
             <span class="muted small-note" th:text="'Signed in as ' + ${username}"></span>
+            <button type="button" id="custom-prompt-open" class="btn btn-secondary">Custom Prompt</button>
             <button type="button" id="change-password-open" class="btn btn-secondary">Change Password</button>
             <form th:action="@{/logout}" method="post">
                 <button type="submit" class="btn btn-secondary">Log Out</button>
@@ -78,7 +79,12 @@
                     <td class="symbol" th:text="${row.symbol}"></td>
                     <td><span class="market-badge" th:text="${row.market.label}"></span></td>
                     <td th:text="${row.companyName}"></td>
-                    <td class="num" th:text="${row.market.currencySymbol + #numbers.formatDecimal(row.currentPrice, 1, 'COMMA', 2, 'POINT')}"></td>
+                    <td class="num">
+                        <span th:text="${row.market.currencySymbol + #numbers.formatDecimal(row.currentPrice, 1, 'COMMA', 2, 'POINT')}"></span>
+                        <br th:if="${row.priceUpdatedAt != null}"/>
+                        <small class="muted" th:if="${row.priceUpdatedAt != null}"
+                               th:text="${#temporals.format(row.priceUpdatedAt, 'yyyy-MM-dd HH:mm')}"></small>
+                    </td>
                     <td class="num cell-td" th:each="account : ${portfolio.accounts()}">
                         <input type="text" inputmode="decimal" class="share-cell" placeholder="-" autocomplete="off"
                                th:data-account-id="${account.id}" th:data-stock-id="${row.stockId}"
@@ -317,20 +323,6 @@
                 </form>
             </section>
             <section class="card">
-                <h2>Custom Prompt</h2>
-                <p class="muted small-note">Your own instructions, added after the app's built-in prompt and sent as the system prompt with every request.</p>
-                <form id="ai-prompt-form" class="form-grid">
-                    <label>
-                        Custom prompt (optional)
-                        <textarea id="ai-custom-prompt" rows="5" maxlength="1000" placeholder="e.g. I'm a long-term investor. Keep answers short and focus on fundamentals."></textarea>
-                    </label>
-                    <div class="ai-actions">
-                        <button type="submit" class="btn btn-primary">Save Prompt</button>
-                        <span id="ai-prompt-status" class="ai-status muted"></span>
-                    </div>
-                </form>
-            </section>
-            <section class="card">
                 <h2>Try It</h2>
                 <p class="muted small-note">Send a prompt to the saved endpoint and model to confirm everything works.</p>
                 <form id="ai-chat-form" class="form-grid">
@@ -464,6 +456,25 @@
     </div>
     <div id="rating-body" class="rating-body"></div>
     <p class="muted small-note">Analyst consensus, actions and news come from Yahoo Finance and are provided for information only. Not financial advice.</p>
+</dialog>
+
+<dialog id="custom-prompt-dialog" class="modal">
+    <div class="modal-head">
+        <h2>Custom Prompt</h2>
+        <button type="button" class="modal-close" id="custom-prompt-close" aria-label="Close">&times;</button>
+    </div>
+    <p class="muted small-note">Your own instructions, added after the app's built-in prompt and sent with your AI requests, including portfolio analysis. Only you see and use this prompt.</p>
+    <form id="ai-prompt-form" class="form-grid">
+        <label>
+            Custom prompt (optional)
+            <textarea id="ai-custom-prompt" rows="6" maxlength="1000"></textarea>
+        </label>
+        <div class="ai-actions">
+            <button type="submit" class="btn btn-primary">Save Prompt</button>
+            <button type="button" id="ai-prompt-reset" class="btn btn-secondary">Reset to Default</button>
+            <span id="ai-prompt-status" class="ai-status muted"></span>
+        </div>
+    </form>
 </dialog>
 
 <dialog id="change-password-dialog" class="modal">
