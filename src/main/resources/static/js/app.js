@@ -292,6 +292,21 @@ document.addEventListener("DOMContentLoaded", () => {
         show(saved);
     }
 
+    const pwDialog = document.getElementById("change-password-dialog");
+    const pwOpenBtn = document.getElementById("change-password-open");
+    if (pwDialog && pwOpenBtn) {
+        pwOpenBtn.addEventListener("click", () => {
+            pwDialog.showModal();
+            document.getElementById("current-password-input").focus();
+        });
+        document.getElementById("change-password-close").addEventListener("click", () => pwDialog.close());
+        pwDialog.addEventListener("click", e => {
+            if (e.target === pwDialog) {
+                pwDialog.close();
+            }
+        });
+    }
+
     const dialog = document.getElementById("add-shares-dialog");
     const openBtn = document.getElementById("add-shares-open");
     if (dialog && openBtn) {

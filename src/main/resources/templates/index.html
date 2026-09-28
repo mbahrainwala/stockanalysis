@@ -22,6 +22,7 @@
                 <button type="submit" class="btn btn-primary">Refresh Market Prices</button>
             </form>
             <span class="muted small-note" th:text="'Signed in as ' + ${username}"></span>
+            <button type="button" id="change-password-open" class="btn btn-secondary">Change Password</button>
             <form th:action="@{/logout}" method="post">
                 <button type="submit" class="btn btn-secondary">Log Out</button>
             </form>
@@ -460,6 +461,28 @@
     </div>
     <div id="rating-body" class="rating-body"></div>
     <p class="muted small-note">Analyst consensus, actions and news come from Yahoo Finance and are provided for information only. Not financial advice.</p>
+</dialog>
+
+<dialog id="change-password-dialog" class="modal">
+    <div class="modal-head">
+        <h2>Change Password</h2>
+        <button type="button" class="modal-close" id="change-password-close" aria-label="Close">&times;</button>
+    </div>
+    <form th:action="@{/account/password}" method="post" class="form-grid">
+        <label>
+            Current Password
+            <input type="password" name="currentPassword" id="current-password-input" required autocomplete="current-password">
+        </label>
+        <label>
+            New Password
+            <input type="password" name="newPassword" required autocomplete="new-password">
+        </label>
+        <label>
+            Confirm New Password
+            <input type="password" name="confirmPassword" required autocomplete="new-password">
+        </label>
+        <button type="submit" class="btn btn-primary">Change Password</button>
+    </form>
 </dialog>
 
 <dialog id="add-shares-dialog" class="modal">
