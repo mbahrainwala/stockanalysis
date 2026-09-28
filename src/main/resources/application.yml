@@ -19,8 +19,17 @@ spring:
       hibernate:
         format_sql: false
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
 server:
-  port: 8080
+  port: 8085
   servlet:
     session:
       # Cookie-only sessions: URL rewriting appends ;jsessionid=... to redirects,
