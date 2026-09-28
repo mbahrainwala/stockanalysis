@@ -254,10 +254,18 @@ body {
     min-width: 140px;
 }
 
+/* Keep this a real table cell: display:flex on a td drops it out of the row's vertical alignment. */
 .manage-actions {
-    display: flex;
-    gap: 8px;
     white-space: nowrap;
+}
+
+.manage-actions form {
+    display: inline-block;
+    margin: 0;
+}
+
+.manage-table .spec-add {
+    margin: 0;
 }
 
 .share-cell,
