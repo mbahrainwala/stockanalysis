@@ -122,9 +122,11 @@ public class PortfolioController {
                              @RequestParam Market market,
                              @RequestParam BigDecimal shares,
                              @RequestParam(required = false) BigDecimal pricePaid,
+                             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                                     iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate purchasedOn,
                              RedirectAttributes redirectAttributes) {
         try {
-            portfolioService.addShares(accountId, symbol, market, shares, pricePaid);
+            portfolioService.addShares(accountId, symbol, market, shares, pricePaid, purchasedOn);
             redirectAttributes.addFlashAttribute("success",
                     "Added " + shares + " shares of " + symbol.toUpperCase() + " (" + market.getLabel() + ").");
         } catch (StockLookupException e) {
@@ -133,6 +135,54 @@ public class PortfolioController {
             redirectAttributes.addFlashAttribute("error", "Could not add shares: " + e.getMessage());
         }
         return "redirect:/";
+    }
+
+    /** The signed-in user's individual purchases of a stock, per account, with each account's average price. */
+    @GetMapping("/api/holdings/lots")
+    @ResponseBody
+    public java.util.List<PortfolioService.AccountLots> purchaseHistory(@RequestParam Long stockId) {
+        return portfolioService.purchaseHistory(stockId);
+    }
+
+    @PostMapping("/api/holdings/lots/{id}/update")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<String> updatePurchase(
+            @PathVariable Long id,
+            @RequestParam @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate purchasedOn,
+            @RequestParam BigDecimal shares, @RequestParam BigDecimal price) {
+        try {
+            portfolioService.updatePurchase(id, purchasedOn, shares, price);
+            return org.springframework.http.ResponseEntity.noContent().build();
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/api/holdings/lots/add")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<String> addPurchase(
+            @RequestParam Long accountId, @RequestParam Long stockId,
+            @RequestParam @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate purchasedOn,
+            @RequestParam BigDecimal shares, @RequestParam BigDecimal price) {
+        try {
+            portfolioService.addPurchase(accountId, stockId, purchasedOn, shares, price);
+            return org.springframework.http.ResponseEntity.noContent().build();
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/api/holdings/lots/{id}/delete")
+    @ResponseBody
+    public org.springframework.http.ResponseEntity<String> deletePurchase(@PathVariable Long id) {
+        try {
+            portfolioService.deletePurchase(id);
+            return org.springframework.http.ResponseEntity.noContent().build();
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 
     @PostMapping("/holdings/set")

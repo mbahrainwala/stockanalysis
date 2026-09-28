@@ -3,6 +3,8 @@ package com.stocks.tracker.model;
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "holding", uniqueConstraints = @UniqueConstraint(columnNames = {"trading_account_id", "stock_id"}))
@@ -25,6 +27,10 @@ public class Holding {
 
     @Column(precision = 19, scale = 4)
     private BigDecimal averageCost;
+
+    /** Individual purchases; shares and averageCost are kept as their totals. */
+    @OneToMany(mappedBy = "holding", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<PurchaseLot> lots = new ArrayList<>();
 
     public Holding() {
     }
@@ -66,6 +72,10 @@ public class Holding {
 
     public void setShares(BigDecimal shares) {
         this.shares = shares;
+    }
+
+    public List<PurchaseLot> getLots() {
+        return lots;
     }
 
     public BigDecimal getAverageCost() {

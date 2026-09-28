@@ -341,6 +341,211 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    // Purchase history per stock: an editable, spreadsheet-style list of purchases per account.
+    const lotsDialog = document.getElementById("lots-dialog");
+    if (lotsDialog) {
+        const body = document.getElementById("lots-body");
+        const empty = document.getElementById("lots-empty");
+        const todayIso = () => {
+            const d = new Date();
+            return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        };
+        const money = (symbol, n, digits) => symbol + Number(n).toLocaleString("en-US",
+            {minimumFractionDigits: digits, maximumFractionDigits: digits});
+        const num = text => Number(String(text).trim().replace(/,/g, ""));
+        const input = (type, value, cls, label) => {
+            const el = document.createElement("input");
+            el.type = type;
+            el.value = value;
+            el.className = cls;
+            el.title = label;
+            el.autocomplete = "off";
+            if (type === "text") {
+                el.inputMode = "decimal";
+            }
+            if (type === "date") {
+                el.max = todayIso();
+            }
+            return el;
+        };
+        const status = document.getElementById("lots-status");
+        const say = (text, bad) => {
+            status.textContent = text;
+            status.className = "ai-status " + (bad ? "bad" : "ok");
+        };
+        let currentStockId = null;
+        // Elements to refresh after an edit, keyed by account id / lot id.
+        let headings = new Map();
+        let costCells = new Map();
+
+        const heading = a => a.accountName + " — " + Number(a.totalShares) + " shares, average "
+            + (a.averageCost == null ? "-" : money(a.currencySymbol, a.averageCost, 4));
+
+        async function fetchAccounts() {
+            const r = await fetch("/api/holdings/lots?stockId=" + encodeURIComponent(currentStockId));
+            return r.ok ? await r.json() : [];
+        }
+
+        // After an edit, update totals in place so the cell being tabbed into keeps focus.
+        async function refreshTotals() {
+            lotsDialog.dataset.changed = "1";
+            for (const a of await fetchAccounts()) {
+                const h = headings.get(a.accountId);
+                if (h) {
+                    h.textContent = heading(a);
+                }
+                for (const l of a.lots) {
+                    const cell = costCells.get(l.id);
+                    if (cell) {
+                        cell.textContent = money(a.currencySymbol, l.shares * l.price, 2);
+                    }
+                }
+            }
+        }
+
+        async function post(url, params) {
+            const r = await csrfFetch(url, {method: "POST", body: new URLSearchParams(params)});
+            if (r.ok) {
+                say("Saved.", false);
+            } else {
+                say(await r.text() || "Could not save.", true);
+            }
+            return r.ok;
+        }
+
+        const complete = (date, shares, price) =>
+            date.value && num(shares.value) > 0 && price.value.trim() !== "" && num(price.value) >= 0;
+
+        function lotRow(a, l, tb) {
+            const tr = tb.insertRow();
+            const date = input("date", l.purchasedOn, "lot-input", "Purchase date");
+            const shares = input("text", String(Number(l.shares)), "lot-input num", "Shares");
+            const price = input("text", String(Number(l.price)), "lot-input num", "Price per share");
+            tr.insertCell().appendChild(date);
+            tr.insertCell().appendChild(shares);
+            tr.insertCell().appendChild(price);
+            const cost = tr.insertCell();
+            cost.className = "num";
+            cost.textContent = money(a.currencySymbol, l.shares * l.price, 2);
+            costCells.set(l.id, cost);
+
+            const save = async () => {
+                if (!complete(date, shares, price)) {
+                    say("Enter a date, shares above zero and a price.", true);
+                    return;
+                }
+                if (await post("/api/holdings/lots/" + l.id + "/update",
+                    {purchasedOn: date.value, shares: num(shares.value), price: num(price.value)})) {
+                    await refreshTotals();
+                }
+            };
+            [date, shares, price].forEach(el => el.addEventListener("change", save));
+
+            const del = document.createElement("button");
+            del.type = "button";
+            del.className = "btn btn-tiny btn-danger lot-btn";
+            del.textContent = "−";
+            del.title = "Delete this purchase";
+            del.addEventListener("click", async () => {
+                if (confirm("Delete this purchase?") && await post("/api/holdings/lots/" + l.id + "/delete", {})) {
+                    lotsDialog.dataset.changed = "1";
+                    render(await fetchAccounts());
+                }
+            });
+            tr.insertCell().appendChild(del);
+        }
+
+        // A blank row; it is saved as soon as it has a date, shares and a price.
+        function draftRow(a, tb, defaultPrice) {
+            const tr = tb.insertRow();
+            const date = input("date", todayIso(), "lot-input", "Purchase date");
+            const shares = input("text", "", "lot-input num", "Shares");
+            const price = input("text", defaultPrice == null ? "" : String(Number(defaultPrice)), "lot-input num", "Price per share");
+            shares.placeholder = "shares";
+            price.placeholder = "price";
+            tr.insertCell().appendChild(date);
+            tr.insertCell().appendChild(shares);
+            tr.insertCell().appendChild(price);
+            tr.insertCell();
+            const discard = document.createElement("button");
+            discard.type = "button";
+            discard.className = "btn btn-tiny btn-secondary lot-btn";
+            discard.textContent = "−";
+            discard.title = "Discard this new purchase";
+            discard.addEventListener("click", () => tr.remove());
+            tr.insertCell().appendChild(discard);
+            let saving = false;
+            const trySave = async () => {
+                if (saving || !complete(date, shares, price)) {
+                    return;
+                }
+                saving = true;
+                if (await post("/api/holdings/lots/add", {accountId: a.accountId, stockId: currentStockId,
+                    purchasedOn: date.value, shares: num(shares.value), price: num(price.value)})) {
+                    lotsDialog.dataset.changed = "1";
+                    render(await fetchAccounts());
+                } else {
+                    saving = false;
+                }
+            };
+            [date, shares, price].forEach(el => el.addEventListener("change", trySave));
+            shares.focus();
+        }
+
+        function render(accounts) {
+            body.replaceChildren();
+            headings = new Map();
+            costCells = new Map();
+            empty.hidden = accounts.length > 0;
+            for (const a of accounts) {
+                const top = document.createElement("div");
+                top.className = "lots-head";
+                const h = document.createElement("h3");
+                h.textContent = heading(a);
+                headings.set(a.accountId, h);
+                const add = document.createElement("button");
+                add.type = "button";
+                add.className = "btn btn-tiny btn-secondary lot-btn";
+                add.textContent = "+";
+                add.title = "Add a purchase";
+                top.append(h, add);
+                body.appendChild(top);
+                const table = document.createElement("table");
+                table.className = "portfolio-table lots-table";
+                const head = table.createTHead().insertRow();
+                for (const t of ["Date", "Shares", "Price", "Cost", ""]) {
+                    const th = document.createElement("th");
+                    th.textContent = t;
+                    head.appendChild(th);
+                }
+                const tb = table.createTBody();
+                a.lots.forEach(l => lotRow(a, l, tb));
+                add.addEventListener("click", () => draftRow(a, tb, a.lots.length ? a.lots[a.lots.length - 1].price : null));
+                body.appendChild(table);
+            }
+        }
+
+        document.querySelectorAll(".lots-open").forEach(btn => btn.addEventListener("click", async () => {
+            currentStockId = btn.dataset.stockId;
+            document.getElementById("lots-title").textContent = btn.dataset.symbol + " purchases";
+            delete lotsDialog.dataset.changed;
+            say("", false);
+            lotsDialog.showModal();
+            render(await fetchAccounts());
+        }));
+        document.getElementById("lots-close").addEventListener("click", () => lotsDialog.close());
+        lotsDialog.addEventListener("close", () => {
+            if (lotsDialog.dataset.changed) {
+                location.reload();
+            }
+        });
+        lotsDialog.addEventListener("click", e => {
+            if (e.target === lotsDialog) {
+                lotsDialog.close();
+            }
+        });
+    }
+
     const pwDialog = document.getElementById("change-password-dialog");
     const pwOpenBtn = document.getElementById("change-password-open");
     if (pwDialog && pwOpenBtn) {

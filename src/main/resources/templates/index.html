@@ -76,7 +76,11 @@
                 </thead>
                 <tbody>
                 <tr th:each="row : ${portfolio.rows()}">
-                    <td class="symbol" th:text="${row.symbol}"></td>
+                    <td class="symbol">
+                        <span th:text="${row.symbol}"></span>
+                        <button type="button" class="btn btn-tiny lots-open" th:data-stock-id="${row.stockId}"
+                                th:data-symbol="${row.symbol}" title="Purchases and average price" aria-label="Purchases">+</button>
+                    </td>
                     <td><span class="market-badge" th:text="${row.market.label}"></span></td>
                     <td th:text="${row.companyName}"></td>
                     <td class="num">
@@ -499,6 +503,17 @@
     </form>
 </dialog>
 
+<dialog id="lots-dialog" class="modal modal-wide">
+    <div class="modal-head">
+        <h2 id="lots-title">Purchases</h2>
+        <button type="button" class="modal-close" id="lots-close" aria-label="Close">&times;</button>
+    </div>
+    <p class="muted small-note">Each purchase of this stock, with the average price you paid per account. Edit a date, shares or price directly; a change saves when you leave the cell. Use + to add a purchase and &minus; to delete one. Editing an account's shares or average cost directly in the portfolio table replaces its purchases with a single one.</p>
+    <p><span id="lots-status" class="ai-status muted"></span></p>
+    <p id="lots-empty" class="muted" hidden>No purchases recorded.</p>
+    <div id="lots-body"></div>
+</dialog>
+
 <dialog id="add-shares-dialog" class="modal">
     <div class="modal-head">
         <h2>Add Shares</h2>
@@ -541,6 +556,10 @@
                 <label>
                     Price Paid Per Share (optional)
                     <input type="number" step="0.0001" min="0" name="pricePaid" placeholder="defaults to current market price">
+                </label>
+                <label>
+                    Purchase Date (optional)
+                    <input type="date" name="purchasedOn" id="purchase-date-input" th:max="${#temporals.format(#temporals.createToday(), 'yyyy-MM-dd')}">
                 </label>
                 <button type="submit" class="btn btn-primary" th:disabled="${accounts.isEmpty()}">Add Shares</button>
                 <p th:if="${accounts.isEmpty()}" class="muted">Add a trading account first.</p>

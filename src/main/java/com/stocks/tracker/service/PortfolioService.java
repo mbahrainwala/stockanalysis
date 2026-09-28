@@ -6,10 +6,12 @@ import com.stocks.tracker.dto.QuoteResult;
 import com.stocks.tracker.model.Currencies;
 import com.stocks.tracker.model.Holding;
 import com.stocks.tracker.model.Market;
+import com.stocks.tracker.model.PurchaseLot;
 import com.stocks.tracker.model.Stock;
 import com.stocks.tracker.model.TradingAccount;
 import com.stocks.tracker.model.User;
 import com.stocks.tracker.repository.HoldingRepository;
+import com.stocks.tracker.repository.PurchaseLotRepository;
 import com.stocks.tracker.repository.StockRepository;
 import com.stocks.tracker.repository.TradingAccountRepository;
 import com.stocks.tracker.security.CurrentUserService;
@@ -20,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,6 +37,7 @@ public class PortfolioService {
     private final TradingAccountRepository accountRepository;
     private final StockRepository stockRepository;
     private final HoldingRepository holdingRepository;
+    private final PurchaseLotRepository lotRepository;
     private final MarketDataService marketDataService;
     private final ExchangeRateService exchangeRates;
     private final SpeculationService speculation;
@@ -42,6 +46,7 @@ public class PortfolioService {
     public PortfolioService(TradingAccountRepository accountRepository,
                              StockRepository stockRepository,
                              HoldingRepository holdingRepository,
+                             PurchaseLotRepository lotRepository,
                              MarketDataService marketDataService,
                              ExchangeRateService exchangeRates,
                              SpeculationService speculation,
@@ -49,6 +54,7 @@ public class PortfolioService {
         this.accountRepository = accountRepository;
         this.stockRepository = stockRepository;
         this.holdingRepository = holdingRepository;
+        this.lotRepository = lotRepository;
         this.marketDataService = marketDataService;
         this.exchangeRates = exchangeRates;
         this.speculation = speculation;
@@ -308,17 +314,27 @@ public class PortfolioService {
     }
 
     /**
-     * Adds shares of a stock to an account. If the stock isn't known yet it is
-     * looked up and created; if the account already holds the stock, the
-     * position is averaged into the existing holding.
+     * Records a purchase of a stock in an account. If the stock isn't known yet it is looked up and
+     * created; each purchase is kept as its own lot (date, shares, price), and the holding's total
+     * shares and average purchase price are recalculated from all of its lots.
+     *
+     * @param purchasedOn date of the purchase; null means today
      */
     @Transactional
-    public void addShares(Long accountId, String symbolInput, Market market, BigDecimal shares, BigDecimal pricePaid) {
+    public void addShares(Long accountId, String symbolInput, Market market, BigDecimal shares, BigDecimal pricePaid,
+                          LocalDate purchasedOn) {
         if (shares == null || shares.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("Shares must be greater than zero");
         }
+        if (pricePaid != null && pricePaid.signum() < 0) {
+            throw new IllegalArgumentException("Price cannot be negative");
+        }
         if (market == null) {
             throw new IllegalArgumentException("Market must be specified");
+        }
+        LocalDate date = purchasedOn == null ? LocalDate.now() : purchasedOn;
+        if (date.isAfter(LocalDate.now())) {
+            throw new IllegalArgumentException("Purchase date cannot be in the future");
         }
 
         TradingAccount account = ownedAccount(accountId);
@@ -339,16 +355,125 @@ public class PortfolioService {
         Holding holding = holdingRepository.findByTradingAccountIdAndStockId(accountId, stock.getId())
                 .orElseGet(() -> new Holding(account, stock, BigDecimal.ZERO, BigDecimal.ZERO));
 
-        BigDecimal existingShares = holding.getShares();
-        BigDecimal existingCost = holding.getAverageCost() == null ? BigDecimal.ZERO : holding.getAverageCost();
-        BigDecimal newTotalShares = existingShares.add(shares);
-        BigDecimal blendedCost = existingShares.multiply(existingCost)
-                .add(shares.multiply(costBasis))
-                .divide(newTotalShares, 4, RoundingMode.HALF_UP);
+        holding.getLots().add(new PurchaseLot(holding, shares, costBasis.setScale(4, RoundingMode.HALF_UP), date));
+        recalculate(holding);
+        saveIfNew(holding);
+    }
 
-        holding.setShares(newTotalShares);
-        holding.setAverageCost(blendedCost);
-        holdingRepository.save(holding);
+    /**
+     * A holding that is already loaded is flushed with its lots when the transaction ends. Calling
+     * save() on it would merge it, which copies its new lots and leaves the originals transient.
+     */
+    private void saveIfNew(Holding holding) {
+        if (holding.getId() == null) {
+            holdingRepository.save(holding);
+        }
+    }
+
+    /** Recomputes a holding's total shares and weighted average purchase price from its lots. */
+    private static void recalculate(Holding holding) {
+        BigDecimal shares = BigDecimal.ZERO;
+        BigDecimal cost = BigDecimal.ZERO;
+        for (PurchaseLot lot : holding.getLots()) {
+            shares = shares.add(lot.getShares());
+            cost = cost.add(lot.getShares().multiply(lot.getPrice()));
+        }
+        holding.setShares(shares);
+        holding.setAverageCost(shares.signum() == 0 ? null : cost.divide(shares, 4, RoundingMode.HALF_UP));
+    }
+
+    /**
+     * After the totals are edited directly (spreadsheet-style), the individual purchases no longer add
+     * up, so they are replaced by one lot holding the edited totals, dated as the earliest purchase.
+     */
+    private static void collapseToSingleLot(Holding holding) {
+        LocalDate date = holding.getLots().stream().map(PurchaseLot::getPurchasedOn)
+                .min(LocalDate::compareTo).orElse(LocalDate.now());
+        holding.getLots().clear();
+        BigDecimal price = holding.getAverageCost() == null ? BigDecimal.ZERO : holding.getAverageCost();
+        holding.getLots().add(new PurchaseLot(holding, holding.getShares(), price, date));
+    }
+
+    /** One purchase, as shown in the purchase history. */
+    public record LotView(Long id, LocalDate purchasedOn, BigDecimal shares, BigDecimal price) {
+    }
+
+    /** All purchases of one stock within one of the user's accounts. */
+    public record AccountLots(Long accountId, String accountName, String currencySymbol, BigDecimal totalShares,
+                              BigDecimal averageCost, List<LotView> lots) {
+    }
+
+    /** The signed-in user's purchase history for a stock, per account, oldest purchase first. */
+    @Transactional(readOnly = true)
+    public List<AccountLots> purchaseHistory(Long stockId) {
+        Map<Long, List<PurchaseLot>> byAccount = new LinkedHashMap<>();
+        for (PurchaseLot lot : lotRepository.findAllByHolding_TradingAccount_Owner_IdAndHolding_Stock_IdOrderByPurchasedOnAscIdAsc(
+                currentUser.currentUserId(), stockId)) {
+            byAccount.computeIfAbsent(lot.getHolding().getTradingAccount().getId(), k -> new java.util.ArrayList<>()).add(lot);
+        }
+        List<AccountLots> result = new java.util.ArrayList<>();
+        for (List<PurchaseLot> lots : byAccount.values()) {
+            Holding holding = lots.get(0).getHolding();
+            TradingAccount account = holding.getTradingAccount();
+            String currency = account.getCurrency() != null && !account.getCurrency().isBlank()
+                    ? account.getCurrency() : currencyOf(holding.getStock());
+            result.add(new AccountLots(account.getId(), account.getName(), Currencies.symbol(currency),
+                    holding.getShares(), holding.getAverageCost(),
+                    lots.stream().map(l -> new LotView(l.getId(), l.getPurchasedOn(), l.getShares(), l.getPrice())).toList()));
+        }
+        return result;
+    }
+
+    private static void validatePurchase(BigDecimal shares, BigDecimal price, LocalDate date) {
+        if (shares == null || shares.signum() <= 0) {
+            throw new IllegalArgumentException("Shares must be greater than zero");
+        }
+        if (price == null || price.signum() < 0) {
+            throw new IllegalArgumentException("Price cannot be negative");
+        }
+        if (date == null) {
+            throw new IllegalArgumentException("Purchase date is required");
+        }
+        if (date.isAfter(LocalDate.now())) {
+            throw new IllegalArgumentException("Purchase date cannot be in the future");
+        }
+    }
+
+    /** Changes one purchase's date, shares and price; the holding's totals are recalculated. */
+    @Transactional
+    public void updatePurchase(Long lotId, LocalDate purchasedOn, BigDecimal shares, BigDecimal price) {
+        validatePurchase(shares, price, purchasedOn);
+        PurchaseLot lot = lotRepository.findByIdAndHolding_TradingAccount_Owner_Id(lotId, currentUser.currentUserId())
+                .orElseThrow(() -> new IllegalArgumentException("Purchase not found."));
+        lot.setPurchasedOn(purchasedOn);
+        lot.setShares(shares);
+        lot.setPrice(price.setScale(4, RoundingMode.HALF_UP));
+        recalculate(lot.getHolding());
+    }
+
+    /** Adds a purchase to a stock the account already holds. */
+    @Transactional
+    public void addPurchase(Long accountId, Long stockId, LocalDate purchasedOn, BigDecimal shares, BigDecimal price) {
+        validatePurchase(shares, price, purchasedOn);
+        ownedAccount(accountId);
+        Holding holding = holdingRepository.findByTradingAccountIdAndStockId(accountId, stockId)
+                .orElseThrow(() -> new IllegalArgumentException("This account does not hold that stock."));
+        holding.getLots().add(new PurchaseLot(holding, shares, price.setScale(4, RoundingMode.HALF_UP), purchasedOn));
+        recalculate(holding);
+    }
+
+    /** Removes one purchase; the holding's totals are recalculated, and the holding goes if nothing is left. */
+    @Transactional
+    public void deletePurchase(Long lotId) {
+        PurchaseLot lot = lotRepository.findByIdAndHolding_TradingAccount_Owner_Id(lotId, currentUser.currentUserId())
+                .orElseThrow(() -> new IllegalArgumentException("Purchase not found."));
+        Holding holding = lot.getHolding();
+        holding.getLots().remove(lot);
+        if (holding.getLots().isEmpty()) {
+            holdingRepository.delete(holding);
+            return;
+        }
+        recalculate(holding);
     }
 
     /**
@@ -371,7 +496,8 @@ public class PortfolioService {
         Holding holding = existing.orElseGet(() -> new Holding(account, stock, BigDecimal.ZERO,
                 stock.getCurrentPrice() != null ? stock.getCurrentPrice() : BigDecimal.ZERO));
         holding.setShares(shares);
-        holdingRepository.save(holding);
+        collapseToSingleLot(holding);
+        saveIfNew(holding);
     }
 
     /** Sets the average purchase price of an account's existing position; blank clears it. */
@@ -384,7 +510,8 @@ public class PortfolioService {
         Holding holding = holdingRepository.findByTradingAccountIdAndStockId(accountId, stockId)
                 .orElseThrow(() -> new IllegalArgumentException("Add shares to this account before setting an average cost."));
         holding.setAverageCost(averageCost == null ? null : averageCost.setScale(4, RoundingMode.HALF_UP));
-        holdingRepository.save(holding);
+        collapseToSingleLot(holding);
+        saveIfNew(holding);
     }
 
     /**

@@ -845,3 +845,20 @@ body {
 
 #analyze-btn[hidden],
 #refresh-prices-form[hidden] { display: none; }
+
+/* Purchases dialog: spreadsheet-style editable rows */
+.lots-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+.lots-head h3 { margin: 0; font-size: 15px; }
+.lots-table input.lot-input {
+    width: 100%;
+    min-width: 110px;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    font: inherit;
+}
+.lots-table input.lot-input.num { text-align: right; }
+.lots-table input.lot-input:hover { border-color: var(--border); }
+.lots-table input.lot-input:focus { border-color: var(--primary, #2563eb); background: #fff; outline: none; }
+.lot-btn { min-width: 32px; font-size: 16px; line-height: 1; }
