@@ -31,6 +31,8 @@ public class AnalysisJobService {
     private static final int MAX_JOBS_KEPT = 20;
     /** Kind of job whose results are saved for later reference. */
     public static final String KIND_ANALYSIS = "analysis";
+    /** Kind of job for the Speculation tab's chat; not saved, but its picks still feed the Speculation list. */
+    public static final String KIND_SPECULATION_CHAT = "speculation-chat";
 
     public enum State { RUNNING, DONE, FAILED, CANCELLED }
 
@@ -173,7 +175,7 @@ public class AnalysisJobService {
         job.future = executor.submit(() -> {
             try {
                 LlmService.ChatResult result = task.run(p -> job.phase = p);
-                if (KIND_ANALYSIS.equals(job.kind)) {
+                if (KIND_ANALYSIS.equals(job.kind) || KIND_SPECULATION_CHAT.equals(job.kind)) {
                     result = withAiPicks(result);
                 }
                 if (finish(job, State.DONE, result, null) && KIND_ANALYSIS.equals(job.kind)) {

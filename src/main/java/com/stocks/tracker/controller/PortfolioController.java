@@ -223,7 +223,8 @@ public class PortfolioController {
             }
         }
         final var turns = conversation;
-        var job = analysisJobService.startExclusive("speculation-chat", phase -> speculationChatService.ask(turns, phase));
+        var job = analysisJobService.startExclusive(AnalysisJobService.KIND_SPECULATION_CHAT,
+                phase -> speculationChatService.ask(turns, phase));
         if (job == null) {
             return org.springframework.http.ResponseEntity.status(409).body("A reply is still being generated.");
         }
@@ -388,7 +389,8 @@ public class PortfolioController {
                 + "considering. Be specific and refer to holdings by symbol. Prices and market data were refreshed just now. "
                 + "Base your analysis on the market snapshot, analyst views, new idea candidates and headlines provided after the "
                 + "portfolio; if a note says some data was omitted, treat that data as incomplete.\n\n"
-                + "If a Speculation watchlist is included, those are stocks the user is considering buying but does not own. "
+                + "If a Speculation watchlist is included, those are stocks the user is considering buying but does not own; "
+                + "do not fold them into the portfolio's diversification, exposure or concentration figures above. "
                 + "For each one, say whether it looks worth buying now, worth waiting on, or worth dropping, using how it has "
                 + "moved since it was added. Also judge how earlier AI-added picks are doing.\n\n"
                 + "If you have new stocks worth adding to the Speculation watchlist, end your reply with exactly one block in "

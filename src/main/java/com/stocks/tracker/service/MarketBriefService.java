@@ -6,9 +6,11 @@ import com.stocks.tracker.model.Holding;
 import com.stocks.tracker.model.Market;
 import com.stocks.tracker.model.Stock;
 import com.stocks.tracker.repository.HoldingRepository;
+import com.stocks.tracker.security.CurrentUserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -65,15 +67,18 @@ public class MarketBriefService {
     private final HoldingRepository holdings;
     private final SpeculationService speculation;
     private final AiContextProperties limits;
+    private final CurrentUserService currentUser;
 
     public MarketBriefService(YahooSession yahoo, ExternalRatingService ratings, ExchangeRateService exchangeRates,
-                              HoldingRepository holdings, SpeculationService speculation, AiContextProperties limits) {
+                              HoldingRepository holdings, SpeculationService speculation, AiContextProperties limits,
+                              CurrentUserService currentUser) {
         this.yahoo = yahoo;
         this.ratings = ratings;
         this.exchangeRates = exchangeRates;
         this.holdings = holdings;
         this.speculation = speculation;
         this.limits = limits;
+        this.currentUser = currentUser;
     }
 
     /**
@@ -82,6 +87,7 @@ public class MarketBriefService {
      * @param tokensAlreadyUsed estimated size of the rest of the prompt (instructions, portfolio summary, chat)
      * @param includeCandidates whether to add new-idea candidates from Yahoo's screeners
      */
+    @Transactional(readOnly = true)
     public String buildBrief(int tokensAlreadyUsed, boolean includeCandidates) {
         int budget = Math.min(limits.getBriefMaxTokens(), limits.getInputBudgetTokens() - tokensAlreadyUsed);
         if (budget < MIN_USEFUL_BUDGET) {
@@ -104,7 +110,8 @@ public class MarketBriefService {
         Map<String, ExternalRatingService.Rating> details = fetchDetails(deep);
 
         List<Section> sections = new ArrayList<>();
-        sections.add(snapshotSection(universe, snapshots));
+        sections.add(speculationSnapshotSection(universe, snapshots));
+        sections.add(holdingsSnapshotSection(universe, snapshots));
         sections.add(analystSection(deep, details, snapshots));
         if (!candidateScreens.isEmpty()) {
             sections.add(candidateSection(candidateScreens, snapshots));
@@ -123,7 +130,7 @@ public class MarketBriefService {
         }
         Map<Long, BigDecimal> valueByStock = new LinkedHashMap<>();
         Map<Long, Stock> stocks = new LinkedHashMap<>();
-        for (Holding h : holdings.findAll()) {
+        for (Holding h : holdings.findAllByTradingAccount_Owner_Id(currentUser.currentUserId())) {
             Stock s = h.getStock();
             BigDecimal price = s.getCurrentPrice() == null ? BigDecimal.ZERO : s.getCurrentPrice();
             String currency = s.getCurrency() == null ? s.getMarket().getDefaultCurrency() : s.getCurrency();
@@ -238,15 +245,32 @@ public class MarketBriefService {
 
     // ---- Sections ----
 
-    private Section snapshotSection(List<Ref> universe, Map<String, Snapshot> snapshots) {
+    private Section speculationSnapshotSection(List<Ref> universe, Map<String, Snapshot> snapshots) {
         List<String> lines = new ArrayList<>();
         for (Ref r : universe) {
+            if (!r.watched()) {
+                continue;
+            }
             Snapshot s = snapshots.get(r.yahooSymbol());
-            lines.add("- " + r.symbol() + " (" + r.name() + ") [" + (r.watched() ? "watchlist" : "held") + "]: "
-                    + (s == null ? "no quote data" : describe(s)));
+            lines.add("- " + r.symbol() + " (" + r.name() + "): " + (s == null ? "no quote data" : describe(s)));
         }
-        return new Section("Market snapshot - watchlist and holdings",
-                "Live Yahoo Finance data, in each stock's own currency. Holdings are ordered by position size.", lines);
+        return new Section("Market snapshot - Speculation watchlist",
+                "Live Yahoo Finance data, in each stock's own currency, for stocks the user is considering buying. "
+                        + "These are NOT owned and are not part of the portfolio - judge them as speculative candidates, "
+                        + "not as holdings.", lines);
+    }
+
+    private Section holdingsSnapshotSection(List<Ref> universe, Map<String, Snapshot> snapshots) {
+        List<String> lines = new ArrayList<>();
+        for (Ref r : universe) {
+            if (r.watched()) {
+                continue;
+            }
+            Snapshot s = snapshots.get(r.yahooSymbol());
+            lines.add("- " + r.symbol() + " (" + r.name() + "): " + (s == null ? "no quote data" : describe(s)));
+        }
+        return new Section("Market snapshot - portfolio holdings",
+                "Live Yahoo Finance data, in each stock's own currency. Ordered by position size.", lines);
     }
 
     private Section analystSection(List<Ref> deep, Map<String, ExternalRatingService.Rating> details,
